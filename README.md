@@ -12,8 +12,8 @@ VoxBridge is a provider-neutral voice-generation plugin and MCP gateway. This re
 
 ## Current release boundary
 
-The gateway is implemented and verified locally with mocked provider contracts, current and legacy MCP clients, a real loopback Streamable HTTP smoke test, lint, and package builds. The hosted image keeps the MCP listener on container loopback and uses an outbound-only Secure MCP Tunnel; it does not expose provider-funded tools on a public unauthenticated URL.
+The gateway is implemented and verified locally with mocked provider contracts, current and legacy MCP clients, a real loopback Streamable HTTP smoke test, lint, and package builds. Speech can be returned for immediate playback, as a short-lived named audio-file resource, or both from one provider generation. The hosted image keeps the MCP listener on container loopback and uses an outbound-only Secure MCP Tunnel; it does not expose provider-funded tools on a public unauthenticated URL.
 
-Live use still requires an OpenAI tunnel ID, a tunnel runtime key, and at least one provider credential. No provider credential was available in this workspace, so paid synthesis and audio quality are not yet verified. Keep all secrets in the hosting platform's sealed variables—never in this repository or chat.
+Live use requires an OpenAI tunnel ID, a tunnel runtime key, and at least one provider credential. Credential-free CI cannot establish account entitlements, vendor availability, or audio quality, so each deployment still needs a low-cost live acceptance check. Keep all secrets in the hosting platform's sealed variables—never in this repository or chat.
 
 GitHub Pages cannot execute the Python gateway. GitHub hosts the source, CI, release assets, and `ghcr.io/gds-g/voxbridge-gateway`; an always-on compute service runs the image. The recommended private-alpha host is Railway with one service and no public domain. See the [deployment guide](voxbridge-gateway/DEPLOYMENT.md).

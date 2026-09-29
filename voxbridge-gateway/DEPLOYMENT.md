@@ -8,6 +8,7 @@ VoxBridge 0.2.0 is a private developer alpha. This document separates the topolo
 - Loopback HTTP by default (`127.0.0.1:8000/mcp`).
 - A fail-closed check for non-loopback HTTP. `VOXBRIDGE_ALLOW_REMOTE_BIND=true` is required to acknowledge a deliberate remote bind.
 - Provider credentials loaded server-side from the process environment or local `.env`.
+- Per-call `playback`, `file`, or `both` delivery, with opaque short-lived MCP file resources held in a bounded process-local cache.
 - `/healthz` and provider-aware `/readyz` endpoints.
 - Container packaging.
 - A repository-root private-hosting image with the official OpenAI `tunnel-client` pinned by version and immutable multi-platform digest.
@@ -34,9 +35,9 @@ Use GitHub for source, CI, and the GHCR image, and use Railway as the always-on 
 2. In OpenAI Platform, create or select a Secure MCP Tunnel and create a separate runtime API key whose principal has **Tunnels Read + Use**. Do not use an admin key for the daemon.
 3. In Railway, create one private persistent service from `GDS-G/VoxxBridge`. The root `Dockerfile` is detected automatically. Do not generate a public domain and disable Serverless/sleep behavior.
 4. Add sealed Railway variables for `CONTROL_PLANE_TUNNEL_ID`, `CONTROL_PLANE_API_KEY`, and at least one provider's required variables. Do not paste their values into chat, source control, build arguments, or image labels.
-5. Keep one normal replica. A short deployment overlap is safe only when old and new replicas use equivalent, protocol-compatible stateless HTTP backends; otherwise stop the old replica first or use a separate tunnel ID. Provider concurrency and quotas apply independently to every replica.
+5. Keep one normal replica. Generated file resources are process-local, so a resource created on one replica cannot be read from another and a restart invalidates outstanding links. A short deployment overlap is safe for stateless discovery and generation only when old and new replicas are protocol-compatible; do not rely on file downloads across that overlap. Provider concurrency and quotas apply independently to every replica.
 6. Deploy, confirm the logs show a successful tunnel connection, and verify tunnel readiness—not only process liveness—before connecting a client. Then enable ChatGPT developer mode, create the connector using **Tunnel**, and select the same tunnel ID.
-7. Run `list_providers`, verify the intended provider reports `configured: true`, list a few voices, and make a short, low-cost synthesis before treating the deployment as usable.
+7. Run `list_providers`, verify the intended provider reports `configured: true`, list a few voices, and make a short, low-cost synthesis before treating the deployment as usable. Exercise `generate_speech` with `delivery="playback"`, `delivery="file"`, and `delivery="both"`; for file delivery, read/save the returned resource and confirm it opens as the requested format.
 
 The container deliberately exposes no public application port. Its local tunnel health UI listens on `127.0.0.1:8080`, and VoxBridge listens on `127.0.0.1:8000`; both remain inside the container. The image-level `/healthz` probe checks tunnel-client liveness. Tunnel `/readyz`, the OpenAI tunnel status, and a successful MCP discovery establish readiness. Do not configure Railway's external HTTP healthcheck against this loopback listener. OpenAI control-plane traffic is outbound HTTPS to `api.openai.com:443`.
 
@@ -48,7 +49,7 @@ The required deployment variables are:
 | `CONTROL_PLANE_API_KEY` | Dedicated runtime key for the tunnel daemon. |
 | Provider variables | At least one provider credential set from the table in `README.md`. |
 
-Optional operational defaults such as `VOXBRIDGE_MAX_TEXT_CHARS`, `VOXBRIDGE_MAX_AUDIO_BYTES`, `VOXBRIDGE_MAX_CONCURRENT_GENERATIONS`, and `VOXBRIDGE_REQUEST_TIMEOUT_SECONDS` can also be set as sealed variables. The hosted launcher always forces the gateway transport to loopback Streamable HTTP and ignores attempts to replace its internal MCP target.
+Optional operational defaults such as `VOXBRIDGE_MAX_TEXT_CHARS`, `VOXBRIDGE_MAX_AUDIO_BYTES`, `VOXBRIDGE_MAX_CONCURRENT_GENERATIONS`, `VOXBRIDGE_AUDIO_DOWNLOAD_TTL_SECONDS`, `VOXBRIDGE_AUDIO_DOWNLOAD_MAX_ITEMS`, `VOXBRIDGE_AUDIO_DOWNLOAD_MAX_BYTES`, and `VOXBRIDGE_REQUEST_TIMEOUT_SECONDS` can also be set as sealed variables. The hosted launcher always forces the gateway transport to loopback Streamable HTTP and ignores attempts to replace its internal MCP target.
 
 If a sidecar or isolated container network requires VoxBridge to listen on a non-loopback interface, launch standalone `voxbridge` or provide a custom entrypoint after establishing the private network boundary, then set both `VOXBRIDGE_HOST` and `VOXBRIDGE_ALLOW_REMOTE_BIND=true`. The supplied `voxbridge-hosted` launcher always forces loopback. Host and Origin validation remains active; configure the exact private proxy host/origin through `VOXBRIDGE_ALLOWED_HOSTS` and `VOXBRIDGE_ALLOWED_ORIGINS` if the loopback defaults do not match. Never use broad wildcard domains or treat the override as a security control.
 

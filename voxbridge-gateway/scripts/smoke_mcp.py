@@ -15,6 +15,21 @@ async def check(url: str) -> None:
         expected = {"list_providers", "list_voices", "generate_speech"}
         if names != expected:
             raise RuntimeError(f"Unexpected MCP tools: {sorted(names)}")
+        generate = next(tool for tool in tools.tools if tool.name == "generate_speech")
+        delivery = generate.input_schema.get("properties", {}).get("delivery", {})
+        if delivery.get("default") != "both" or set(delivery.get("enum", [])) != {
+            "playback",
+            "file",
+            "both",
+        }:
+            raise RuntimeError("generate_speech delivery schema is unavailable")
+        templates = await client.list_resource_templates(cache_mode="reload")
+        template_uris = {str(item.uri_template) for item in templates.resource_templates}
+        if not {
+            "voxbridge://audio/mp3/{token}/{file_name}",
+            "voxbridge://audio/wav/{token}/{file_name}",
+        }.issubset(template_uris):
+            raise RuntimeError("VoxBridge audio download resource templates are unavailable")
         result = await client.call_tool("list_providers", {})
         if result.is_error:
             raise RuntimeError("list_providers returned an MCP tool error")

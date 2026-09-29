@@ -31,9 +31,10 @@ The plugin package deliberately contains no provider keys and no placeholder pub
 
 - `list_providers()` returns capabilities, defaults, and whether each adapter is configured.
 - `list_voices(provider, language?, limit?)` returns a provider voice catalog.
-- `generate_speech(...)` invokes the selected provider and returns metadata plus playable MCP `AudioContent`.
+- `generate_speech(..., delivery="playback" | "file" | "both")` invokes the selected provider once and returns the selected representation: playable MCP `AudioContent`, a short-lived named `ResourceLink` that compatible hosts can download as an audio file, or both. The default is `both`.
 
 Provider-specific controls are capability-gated. VoxBridge does not silently switch providers.
+`list_providers` reports both `supported_formats` and `file_delivery_formats`. Raw PCM remains available for `playback`, but `file` and `both` require a self-describing audio container such as WAV.
 
 ## Private local setup
 
@@ -99,6 +100,9 @@ Gateway settings are also environment variables:
 | `VOXBRIDGE_MAX_TEXT_CHARS` | `3000` | Maximum input text size. |
 | `VOXBRIDGE_MAX_AUDIO_BYTES` | `20971520` | Maximum returned audio size. |
 | `VOXBRIDGE_MAX_CONCURRENT_GENERATIONS` | `2` | Process-local generation concurrency. |
+| `VOXBRIDGE_AUDIO_DOWNLOAD_TTL_SECONDS` | `900` | Lifetime of a generated file resource in the process-local download cache. |
+| `VOXBRIDGE_AUDIO_DOWNLOAD_MAX_ITEMS` | `32` | Maximum number of generated file resources retained by one replica. |
+| `VOXBRIDGE_AUDIO_DOWNLOAD_MAX_BYTES` | `67108864` | Maximum total bytes retained for generated file downloads by one replica. |
 | `VOXBRIDGE_REQUEST_TIMEOUT_SECONDS` | `60` | Outbound provider timeout. |
 | `VOXBRIDGE_ALLOWED_HOSTS` | loopback hosts | JSON array of Host-header patterns accepted by the MCP transport. |
 | `VOXBRIDGE_ALLOWED_ORIGINS` | loopback HTTP origins | JSON array of browser origins accepted by the MCP transport. |
@@ -175,6 +179,8 @@ python scripts/smoke_mcp.py
 ```
 
 Lint, unit tests, and a successful wheel/source build validate the repository mechanics. They do not validate provider credentials, live vendor APIs, account entitlements, content-policy compliance, or audio quality.
+
+Private-alpha downloads use opaque, short-lived MCP resource links backed by a bounded in-memory cache on the single gateway replica. They need no public file URL and avoid duplicating audio bytes in the initial `both` response. Links expire, and a deployment restart invalidates them. Longer production audio should use authenticated durable storage with short-lived downloads and lifecycle deletion.
 
 ## Before a public launch
 

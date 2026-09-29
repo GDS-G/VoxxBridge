@@ -3,7 +3,7 @@ from __future__ import annotations
 from ipaddress import ip_address
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,8 +16,19 @@ class Settings(BaseSettings):
     voxbridge_log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     voxbridge_allow_remote_bind: bool = False
     voxbridge_max_text_chars: int = Field(default=3_000, ge=1, le=50_000)
-    voxbridge_max_audio_bytes: int = Field(default=20 * 1024 * 1024, ge=1_024)
+    voxbridge_max_audio_bytes: int = Field(
+        default=20 * 1024 * 1024,
+        ge=1_024,
+        le=100 * 1024 * 1024,
+    )
     voxbridge_max_concurrent_generations: int = Field(default=2, ge=1, le=64)
+    voxbridge_audio_download_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
+    voxbridge_audio_download_max_items: int = Field(default=32, ge=1, le=1_000)
+    voxbridge_audio_download_max_bytes: int = Field(
+        default=64 * 1024 * 1024,
+        ge=1_024,
+        le=512 * 1024 * 1024,
+    )
     voxbridge_request_timeout_seconds: float = Field(default=60.0, gt=0, le=300.0)
     voxbridge_allowed_hosts: list[str] = Field(
         default_factory=lambda: ["127.0.0.1:*", "localhost:*", "[::1]:*"]
@@ -42,6 +53,14 @@ class Settings(BaseSettings):
     google_cloud_tts_enabled: bool = False
     azure_speech_key: str | None = None
     azure_speech_region: str | None = None
+
+    @model_validator(mode="after")
+    def validate_download_cache_capacity(self) -> Settings:
+        if self.voxbridge_audio_download_max_bytes < self.voxbridge_max_audio_bytes:
+            raise ValueError(
+                "VOXBRIDGE_AUDIO_DOWNLOAD_MAX_BYTES must be at least VOXBRIDGE_MAX_AUDIO_BYTES"
+            )
+        return self
 
     def assert_safe_bind(self) -> None:
         """Fail closed unless a non-loopback listener was explicitly approved.

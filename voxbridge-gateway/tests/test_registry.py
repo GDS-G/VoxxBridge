@@ -113,6 +113,7 @@ def test_provider_capabilities_and_limits_are_truthful():
         assert info["id"] == provider_id
         assert set(info["capabilities"]) == expected["capabilities"]
         assert set(info["supported_formats"]) == expected["formats"]
+        assert set(info["file_delivery_formats"]) == expected["formats"] - {"pcm"}
         assert info["max_text_chars"] == expected["max_text_chars"]
         assert info["supports_instructions"] is expected["instructions"]
         assert info["instructions_note"] == provider.instructions_note
