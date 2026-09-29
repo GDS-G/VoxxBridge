@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import signal
 import sys
 from collections.abc import Mapping
 
 LOGGER = logging.getLogger("voxbridge.hosted")
+TUNNEL_ID_PATTERN = re.compile(r"tunnel_[0-9a-f]{32}")
 
 
 def _hosted_environment(source: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -19,6 +21,17 @@ def _hosted_environment(source: Mapping[str, str] | None = None) -> dict[str, st
     MCP initialization across separate stdio children.
     """
     env = dict(os.environ if source is None else source)
+    tunnel_id = env.get("CONTROL_PLANE_TUNNEL_ID", "").strip()
+    if not TUNNEL_ID_PATTERN.fullmatch(tunnel_id):
+        raise RuntimeError(
+            "CONTROL_PLANE_TUNNEL_ID must be 'tunnel_' followed by 32 lowercase hex characters"
+        )
+    if not env.get("CONTROL_PLANE_API_KEY", "").strip():
+        raise RuntimeError(
+            "CONTROL_PLANE_API_KEY is required; the hosted gateway will not fall back "
+            "to the provider OPENAI_API_KEY"
+        )
+
     raw_port = env.get("VOXBRIDGE_PORT", "8000")
     try:
         port = int(raw_port)
@@ -31,6 +44,7 @@ def _hosted_environment(source: Mapping[str, str] | None = None) -> dict[str, st
     env["VOXBRIDGE_HOST"] = "127.0.0.1"
     env["VOXBRIDGE_PORT"] = str(port)
     env["VOXBRIDGE_ALLOW_REMOTE_BIND"] = "false"
+    env["CONTROL_PLANE_TUNNEL_ID"] = tunnel_id
     env["MCP_SERVER_URL"] = f"http://127.0.0.1:{port}/mcp"
     env.setdefault("MCP_STARTUP_WAIT_TIMEOUT", "60s")
     return env

@@ -35,10 +35,10 @@ Use GitHub for source, CI, and the GHCR image, and use Railway as the always-on 
 3. In Railway, create one private persistent service from `GDS-G/VoxxBridge`. The root `Dockerfile` is detected automatically. Do not generate a public domain and disable Serverless/sleep behavior.
 4. Add sealed Railway variables for `CONTROL_PLANE_TUNNEL_ID`, `CONTROL_PLANE_API_KEY`, and at least one provider's required variables. Do not paste their values into chat, source control, build arguments, or image labels.
 5. Keep one normal replica. The hosted topology uses stateless HTTP between `tunnel-client` and VoxBridge, so a short deployment overlap is safe; provider concurrency and quotas still apply independently to every replica.
-6. Deploy, check that the container remains healthy, and confirm the logs show the tunnel connection. Then enable ChatGPT developer mode, create the connector using **Tunnel**, and select the same tunnel ID.
+6. Deploy, confirm the logs show a successful tunnel connection, and verify tunnel readiness—not only process liveness—before connecting a client. Then enable ChatGPT developer mode, create the connector using **Tunnel**, and select the same tunnel ID.
 7. Run `list_providers`, verify the intended provider reports `configured: true`, list a few voices, and make a short, low-cost synthesis before treating the deployment as usable.
 
-The container deliberately exposes no public application port. Its local tunnel health UI listens on `127.0.0.1:8080`, and VoxBridge listens on `127.0.0.1:8000`; both remain inside the container. OpenAI control-plane traffic is outbound HTTPS to `api.openai.com:443`.
+The container deliberately exposes no public application port. Its local tunnel health UI listens on `127.0.0.1:8080`, and VoxBridge listens on `127.0.0.1:8000`; both remain inside the container. The image-level `/healthz` probe checks tunnel-client liveness. Tunnel `/readyz`, the OpenAI tunnel status, and a successful MCP discovery establish readiness. Do not configure Railway's external HTTP healthcheck against this loopback listener. OpenAI control-plane traffic is outbound HTTPS to `api.openai.com:443`.
 
 The required deployment variables are:
 
