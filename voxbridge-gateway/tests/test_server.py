@@ -118,9 +118,9 @@ async def test_generate_speech_returns_metadata_and_app_playback_file(
     assert request.language == "en-US"
     assert request.options == {"tone": "bright"}
 
-    assert len(output) == 2
-    assert isinstance(output[0], TextContent)
-    metadata = json.loads(output[0].text)
+    assert len(output.content) == 2
+    assert isinstance(output.content[0], TextContent)
+    metadata = json.loads(output.content[0].text)
     assert metadata == {
         "synthetic_audio": True,
         "provider": "fake",
@@ -142,11 +142,17 @@ async def test_generate_speech_returns_metadata_and_app_playback_file(
     assert re.fullmatch(r"voxbridge-[0-9a-f]{32}\.wav", metadata["file_name"])
     assert metadata["resource_uri"].endswith(f"/{metadata['file_name']}")
     assert metadata["download_expires_at"].endswith("Z")
-    assert isinstance(output[1], ResourceLink)
-    assert output[1].uri == metadata["resource_uri"]
-    assert output[1].name == metadata["file_name"]
-    assert output[1].mime_type == "audio/wav"
-    assert output[1].size == len(b"fake-audio")
+    assert isinstance(output.content[1], ResourceLink)
+    assert output.content[1].uri == metadata["resource_uri"]
+    assert output.content[1].name == metadata["file_name"]
+    assert output.content[1].mime_type == "audio/wav"
+    assert output.content[1].size == len(b"fake-audio")
+    assert output.meta == {
+        "voxbridge/audio": {
+            "data": base64.b64encode(b"fake-audio").decode("ascii"),
+            "mimeType": "audio/wav",
+        }
+    }
 
 
 @pytest.mark.parametrize(
@@ -209,8 +215,8 @@ async def test_file_resource_preserves_canonical_mime_type(
     monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
 
     output = await server.generate_speech("fake", "Hello", delivery="file")
-    metadata = json.loads(output[0].text)
-    link = output[1]
+    metadata = json.loads(output.content[0].text)
+    link = output.content[1]
     read_result = list(await server.mcp.read_resource(link.uri))
 
     assert metadata["file_mime_type"] == file_mime_type
@@ -236,13 +242,13 @@ async def test_download_metadata_cannot_be_overridden_by_provider(monkeypatch):
     monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
 
     output = await server.generate_speech("fake", "private script text")
-    metadata = json.loads(output[0].text)
+    metadata = json.loads(output.content[0].text)
 
     assert re.fullmatch(r"voxbridge-[0-9a-f]{32}\.mp3", metadata["file_name"])
     assert metadata["file_size_bytes"] == len(b"safe-audio")
     assert metadata["file_resource_included"] is True
     assert "private" not in metadata["file_name"]
-    assert output[1].uri == metadata["resource_uri"]
+    assert output.content[1].uri == metadata["resource_uri"]
 
 
 @pytest.mark.parametrize(
@@ -264,9 +270,9 @@ async def test_delivery_selects_playback_file_or_both(
     monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
 
     output = await server.generate_speech("fake", "Hello", delivery=delivery)
-    metadata = json.loads(output[0].text)
+    metadata = json.loads(output.content[0].text)
 
-    assert [item.type for item in output] == content_types
+    assert [item.type for item in output.content] == content_types
     assert metadata["delivery"] == delivery
     assert metadata["playback_requested"] is playback_requested
     assert metadata["inline_audio_included"] is (delivery == "playback")
@@ -275,9 +281,18 @@ async def test_delivery_selects_playback_file_or_both(
     assert len(provider.generated) == 1
     assert server._audio_artifacts.item_count == int(file_included)
     if delivery == "playback":
-        assert isinstance(output[1], AudioContent)
-        assert output[1].mime_type == "audio/wav"
-        assert base64.b64decode(output[1].data) == b"fake-audio"
+        assert isinstance(output.content[1], AudioContent)
+        assert output.content[1].mime_type == "audio/wav"
+        assert base64.b64decode(output.content[1].data) == b"fake-audio"
+    if delivery == "both":
+        assert output.meta == {
+            "voxbridge/audio": {
+                "data": base64.b64encode(b"fake-audio").decode("ascii"),
+                "mimeType": "audio/wav",
+            }
+        }
+    else:
+        assert output.meta is None
     if file_included:
         assert metadata["file_name"]
         assert metadata["resource_uri"]
@@ -353,14 +368,21 @@ async def test_mcp_client_receives_downloadable_file_for_app_playback(monkeypatc
         assert [item.type for item in result.content] == ["text", "resource_link"]
         metadata = json.loads(result.content[0].text)
         downloadable = result.content[1]
-        resource = await client.read_resource(downloadable.uri, cache_mode="bypass")
+        playback_resource = await client.read_resource(downloadable.uri, cache_mode="bypass")
+        download_resource = await client.read_resource(downloadable.uri, cache_mode="bypass")
 
+    assert result.meta is not None
+    assert result.meta["voxbridge/audio"] == {
+        "data": base64.b64encode(b"fake-audio").decode("ascii"),
+        "mimeType": "audio/wav",
+    }
     assert downloadable.uri == metadata["resource_uri"]
     assert downloadable.name == metadata["file_name"]
     assert downloadable.mime_type == "audio/wav"
-    assert len(resource.contents) == 1
-    assert resource.contents[0].mime_type == "audio/wav"
-    assert base64.b64decode(resource.contents[0].blob) == b"fake-audio"
+    for resource in (playback_resource, download_resource):
+        assert len(resource.contents) == 1
+        assert resource.contents[0].mime_type == "audio/wav"
+        assert base64.b64decode(resource.contents[0].blob) == b"fake-audio"
 
 
 @pytest.mark.parametrize(
@@ -392,7 +414,7 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert delivery_schema["default"] == "both"
     assert set(delivery_schema["enum"]) == {"playback", "file", "both"}
     generate_meta = by_name["generate_speech"].meta
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v4.html"
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v5.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     if mode == "legacy":
@@ -436,6 +458,9 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert "URL.createObjectURL" not in document.text
     assert "media-src blob:" not in document.text
     assert "attached-file Download action" in document.text
+    assert "voxbridge/audio" in document.text
+    assert "Choose Play audio to load the file for playback" in document.text
+    assert "If file approval is pending" in document.text
 
 
 async def test_mcp_tool_error_is_returned_as_safe_tool_content(monkeypatch):

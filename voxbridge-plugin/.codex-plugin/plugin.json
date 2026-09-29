@@ -16,7 +16,7 @@
     ]
   },
   "name": "voxbridge",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Generate realistic AI speech for playback, file download, or both through one provider-neutral ChatGPT workflow.",
   "author": {
     "name": "VoxBridge"

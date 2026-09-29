@@ -9,7 +9,15 @@ type ResourceReadResult = Awaited<ReturnType<App["readServerResource"]>>;
 type ResourceReadContent = ResourceReadResult["contents"][number];
 type BlobResourceContents = Extract<ResourceReadContent, { blob: string }>;
 type DeliveryMode = "playback" | "file" | "both";
-type PlaybackState = "unavailable" | "ready" | "decoding" | "playing" | "paused" | "ended";
+type AppAudioMetadata = Pick<AudioContent, "data" | "mimeType">;
+type PlaybackState =
+  | "unavailable"
+  | "resource"
+  | "ready"
+  | "decoding"
+  | "playing"
+  | "paused"
+  | "ended";
 
 type SpeechMetadata = {
   app_resource_playback?: boolean;
@@ -61,6 +69,7 @@ let isDownloading = false;
 let latestResult: ToolResult | undefined;
 let resultRevision = 0;
 let playbackRevision = 0;
+let playbackResource: ResourceLink | undefined;
 let playbackBytes: ArrayBuffer | undefined;
 let playbackContext: AudioContext | undefined;
 let playbackBuffer: AudioBuffer | undefined;
@@ -122,7 +131,7 @@ function isBlobResourceContents(content: ResourceReadContent): content is BlobRe
 
 function decodeBase64Audio(data: string, mimeType: string): ArrayBuffer {
   const base64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-  if (!mimeType.startsWith("audio/") || data.length === 0 || !base64Pattern.test(data)) {
+  if (!mimeType.toLowerCase().startsWith("audio/") || data.length === 0 || !base64Pattern.test(data)) {
     throw new Error("Invalid base64 audio content");
   }
 
@@ -138,22 +147,25 @@ function decodeBase64Audio(data: string, mimeType: string): ArrayBuffer {
   return bytes.buffer;
 }
 
+function parseAppAudioMetadata(result: ToolResult): AppAudioMetadata | undefined {
+  const value = result._meta?.["voxbridge/audio"];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+
+  const data = "data" in value ? value.data : undefined;
+  const mimeType = "mimeType" in value ? value.mimeType : undefined;
+  if (typeof data !== "string" || typeof mimeType !== "string") return undefined;
+  return { data, mimeType };
+}
+
 function parseResourceAudio(result: ResourceReadResult, resource: ResourceLink) {
-  if (result.contents.length !== 1) {
-    throw new Error("Expected exactly one resource content item");
+  for (const content of result.contents) {
+    if (!isBlobResourceContents(content)) continue;
+    const mimeType = content.mimeType ?? resource.mimeType;
+    if (mimeType?.toLowerCase().startsWith("audio/")) {
+      return { data: content.blob, mimeType };
+    }
   }
-
-  const content = result.contents[0];
-  if (
-    !content ||
-    !isBlobResourceContents(content) ||
-    content.uri !== resource.uri ||
-    !content.mimeType?.startsWith("audio/")
-  ) {
-    throw new Error("Expected one base64 audio blob resource");
-  }
-
-  return { data: content.blob, mimeType: content.mimeType };
+  throw new Error("Expected a base64 audio blob resource");
 }
 
 function stopPlaybackSource() {
@@ -186,6 +198,7 @@ function clearPlayback() {
   stopPlaybackSource();
   const context = playbackContext;
   playbackContext = undefined;
+  playbackResource = undefined;
   playbackBytes = undefined;
   playbackBuffer = undefined;
   playbackState = "unavailable";
@@ -198,6 +211,13 @@ function clearPlayback() {
   playPauseButton.setAttribute("aria-pressed", "false");
   playbackIcon.textContent = "▶";
   playbackLabel.textContent = "Play audio";
+}
+
+function prepareResourcePlayback(resource: ResourceLink) {
+  clearPlayback();
+  playbackResource = resource;
+  playbackState = "resource";
+  playback.hidden = false;
 }
 
 function preparePlayback(audio: Pick<AudioContent, "data" | "mimeType"> | undefined) {
@@ -266,41 +286,9 @@ function showPlaybackUnavailable(reason: string) {
   setStatus(`${reason} ${fileDeliveryStatus()}`, "error");
 }
 
-async function preparePlaybackFromResource(resource: ResourceLink, revision: number) {
-  if (!isConnected || !hostCanReadResources) return;
-
-  setStatus(
-    hostCanDownload
-      ? "The file is ready. Preparing playback…"
-      : "Preparing playback. The host's attached-file Download action remains available below.",
-  );
-
-  try {
-    const result = await app.readServerResource({ uri: resource.uri });
-    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
-
-    const resourceAudio = parseResourceAudio(result, resource);
-    if (!preparePlayback(resourceAudio)) {
-      throw new Error("The resource did not contain valid base64 audio");
-    }
-
-    summary.textContent = "Your audio is ready to play and download.";
-    setStatus(
-      hostCanDownload
-        ? "Ready to play or download."
-        : "Ready to play. Use the host's attached-file Download action below.",
-    );
-  } catch {
-    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
-    showPlaybackUnavailable(
-      "Playback is unavailable because the temporary audio resource could not be read.",
-    );
-  }
-}
-
 function renderResult(result: ToolResult) {
   latestResult = result;
-  const revision = ++resultRevision;
+  resultRevision += 1;
   clearPlayback();
   if (result.isError) {
     currentResource = undefined;
@@ -352,6 +340,15 @@ function renderResult(result: ToolResult) {
       setStatus("Playback and file delivery could not be prepared.", "error");
       return;
     }
+    const appAudio = parseAppAudioMetadata(result);
+    if (appAudio && preparePlayback(appAudio)) {
+      setStatus(
+        hostCanDownload
+          ? "Ready to play or download."
+          : "Ready to play. Use the host's attached-file Download action below.",
+      );
+      return;
+    }
     if (!isConnected) {
       setStatus(
         "Waiting for the host connection before preparing playback. The attached audio file remains available below.",
@@ -364,7 +361,12 @@ function renderResult(result: ToolResult) {
       );
       return;
     }
-    void preparePlaybackFromResource(resource, revision);
+    prepareResourcePlayback(resource);
+    setStatus(
+      hostCanDownload
+        ? "Ready to download. Choose Play audio to load the file for playback."
+        : "Choose Play audio to load the file for playback. The host's attached-file Download action remains available below.",
+    );
     return;
   }
 
@@ -410,10 +412,11 @@ async function togglePlayback() {
     return;
   }
 
-  if (!playbackBytes || playbackState === "decoding") return;
+  if (playbackState === "decoding" || (!playbackBytes && !playbackResource)) return;
 
   const revision = playbackRevision;
-  const bytes = playbackBytes;
+  const resource = playbackResource;
+  let bytes = playbackBytes;
   const previousState = playbackState;
   if (previousState === "ended") {
     playbackOffsetSeconds = 0;
@@ -421,7 +424,8 @@ async function togglePlayback() {
   playbackState = "decoding";
   playPauseButton.disabled = true;
   playPauseButton.setAttribute("aria-busy", "true");
-  setStatus("Preparing playback…");
+  playbackLabel.textContent = bytes ? "Preparing audio…" : "Loading audio…";
+  setStatus(bytes ? "Preparing playback…" : "Loading audio for playback…");
 
   let context = playbackContext;
   try {
@@ -431,10 +435,30 @@ async function togglePlayback() {
     }
 
     const resumePromise = context.state === "suspended" ? context.resume() : Promise.resolve();
+    if (!bytes) {
+      if (!resource) return;
+      const [result] = await Promise.all([
+        app.readServerResource({ uri: resource.uri }),
+        resumePromise,
+      ]);
+      if (
+        revision !== playbackRevision ||
+        playbackResource?.uri !== resource.uri ||
+        playbackContext !== context
+      ) {
+        return;
+      }
+      const resourceAudio = parseResourceAudio(result, resource);
+      bytes = decodeBase64Audio(resourceAudio.data, resourceAudio.mimeType);
+      playbackBytes = bytes;
+    } else {
+      await resumePromise;
+    }
+
     const decodePromise: Promise<AudioBuffer> = playbackBuffer
       ? Promise.resolve(playbackBuffer)
       : context.decodeAudioData(bytes.slice(0));
-    const [, decodedBuffer] = await Promise.all([resumePromise, decodePromise]);
+    const decodedBuffer = await decodePromise;
 
     if (
       revision !== playbackRevision ||
@@ -479,12 +503,25 @@ async function togglePlayback() {
     playbackLabel.textContent = "Pause audio";
     setStatus("Playing audio.");
   } catch {
-    if (revision !== playbackRevision || playbackBytes !== bytes) return;
+    if (revision !== playbackRevision) return;
     stopPlaybackSource();
     if (playbackContext === context) {
       playbackContext = undefined;
     }
     closePlaybackContext(context);
+    if (!playbackBytes && playbackResource) {
+      playbackState = "resource";
+      playPauseButton.disabled = false;
+      playPauseButton.setAttribute("aria-busy", "false");
+      playPauseButton.setAttribute("aria-pressed", "false");
+      playbackIcon.textContent = "▶";
+      playbackLabel.textContent = "Play audio";
+      setStatus(
+        `Playback could not load yet. If file approval is pending, allow it and choose Play audio again. ${fileDeliveryStatus()}`,
+        "error",
+      );
+      return;
+    }
     playbackState = previousState === "paused" ? "paused" : previousState === "ended" ? "ended" : "ready";
     playPauseButton.disabled = false;
     playPauseButton.setAttribute("aria-busy", "false");
