@@ -1,8 +1,8 @@
 # VoxBridge local plugin package
 
-This directory contains the private `0.2.1` developer-alpha plugin candidate and its voice-generation skill instructions. Users can explicitly choose immediate playback, a downloadable audio file, or both. The gateway's MCP App presents the file through a host-mediated Download button, while non-UI MCP clients retain standard resource access. This package binds the user-owned private VoxBridge Gateway app; it does not contain the gateway, provider credentials, tunnel configuration, or a public MCP connection.
+This directory contains the private `0.2.2` developer-alpha plugin candidate and its voice-generation skill instructions. Users can explicitly choose immediate playback, a downloadable audio file, or both. The gateway's MCP App presents the file through a host-mediated Download button, while non-UI MCP clients retain standard resource access. This package binds the user-owned private VoxBridge Gateway app; it does not contain the gateway, provider credentials, tunnel configuration, or a public MCP connection.
 
-Raw PCM is playback-only in this developer alpha. File or combined delivery uses a self-describing format such as WAV, MP3, FLAC, AAC, Ogg/Opus, M4A, or WebM as supported by the selected provider.
+Raw headerless PCM is unavailable in this developer alpha because it lacks portable sample metadata. Use a self-describing format such as WAV, MP3, FLAC, AAC, Ogg/Opus, M4A, or WebM as supported by the selected provider.
 
 ## Current boundary
 

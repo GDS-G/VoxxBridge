@@ -26,7 +26,7 @@ from voxbridge.models import SpeechRequest
 from voxbridge.providers.base import ProviderError
 from voxbridge.registry import REGISTRY, close_registry
 
-_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v3.html"
+_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v4.html"
 _AUDIO_DELIVERY_UI_HTML = (
     files("voxbridge").joinpath("ui").joinpath("audio-delivery-v1.html").read_text(encoding="utf-8")
 )
@@ -286,19 +286,20 @@ async def generate_speech(
     `instructions` is provider-aware: Hume Octave 1 treats it as acting direction and
     OpenAI treats it as voice instructions on supported models. `options_json` is for
     documented provider-specific controls such as ElevenLabs stability/similarity,
-    Cartesia emotion/volume, or Resemble HD synthesis. `delivery` controls whether the
-    result contains playable audio, a short-lived named file resource, or both. Raw PCM is
-    playback-only; request WAV when `delivery` is `file` or `both`.
+    Cartesia emotion/volume, or Resemble HD synthesis. `playback` returns inline MCP audio;
+    `file` returns a short-lived named resource; `both` returns one file resource that the
+    bound MCP App reads for playback so compatible hosts retain their file Download action.
+    Raw PCM is not portable because it has no embedded sample metadata; request WAV instead.
     """
     if not text.strip():
         raise ToolError("text cannot be empty")
     if delivery not in {"playback", "file", "both"}:
         raise ToolError("delivery must be 'playback', 'file', or 'both'")
     normalized_output_format = output_format.strip().lower()
-    if delivery in {"file", "both"} and normalized_output_format == "pcm":
+    if normalized_output_format == "pcm":
         raise ToolError(
-            "PCM file delivery is unavailable in this developer alpha because raw PCM "
-            "does not carry portable sample metadata; use WAV instead"
+            "PCM delivery is unavailable in this developer alpha because raw PCM does not "
+            "carry portable sample metadata; use WAV instead"
         )
     if len(text) > settings.voxbridge_max_text_chars:
         raise ToolError(
@@ -351,13 +352,19 @@ async def generate_speech(
         "mime_type": result.mime_type,
         "request_id": result.request_id,
         "delivery": delivery,
-        "playback_included": include_playback,
+        "playback_requested": include_playback,
+        "inline_audio_included": delivery == "playback",
+        "app_resource_playback": delivery == "both",
         "file_resource_included": include_file,
         "file_size_bytes": len(result.audio),
     }
     content: list[TextContent | AudioContent | ResourceLink] = []
     audio_content: AudioContent | None = None
-    if include_playback:
+    # ChatGPT can suppress a ResourceLink's host download action when the same
+    # result also contains inline audio. In `both` mode the MCP App reads the
+    # short-lived resource and decodes those same bytes for playback, leaving
+    # the result in the proven downloadable-file shape.
+    if delivery == "playback":
         audio_content = AudioContent(
             type="audio",
             data=base64.b64encode(result.audio).decode("ascii"),

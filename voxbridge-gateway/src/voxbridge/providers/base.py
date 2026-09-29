@@ -195,7 +195,7 @@ class VoiceProvider(ABC):
             raise ProviderError(f"{self.display_name} returned invalid JSON") from exc
 
     def info(self) -> dict[str, Any]:
-        file_delivery_formats = [
+        gateway_formats = [
             output_format for output_format in self.supported_formats if output_format != "pcm"
         ]
         return {
@@ -204,8 +204,8 @@ class VoiceProvider(ABC):
             "configured": self.configured,
             "default_model": self.default_model,
             "capabilities": list(self.capabilities),
-            "supported_formats": list(self.supported_formats),
-            "file_delivery_formats": file_delivery_formats,
+            "supported_formats": gateway_formats,
+            "file_delivery_formats": gateway_formats,
             "max_text_chars": self.max_text_chars,
             "supports_instructions": self.supports_instructions,
             "instructions_note": self.instructions_note,

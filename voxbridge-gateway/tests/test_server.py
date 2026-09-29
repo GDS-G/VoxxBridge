@@ -88,7 +88,7 @@ def clear_audio_artifacts():
     server._audio_artifacts.clear()
 
 
-async def test_generate_speech_returns_metadata_playable_audio_and_downloadable_file(
+async def test_generate_speech_returns_metadata_and_app_playback_file(
     monkeypatch,
 ):
     provider = FakeProvider()
@@ -118,7 +118,7 @@ async def test_generate_speech_returns_metadata_playable_audio_and_downloadable_
     assert request.language == "en-US"
     assert request.options == {"tone": "bright"}
 
-    assert len(output) == 3
+    assert len(output) == 2
     assert isinstance(output[0], TextContent)
     metadata = json.loads(output[0].text)
     assert metadata == {
@@ -129,7 +129,9 @@ async def test_generate_speech_returns_metadata_playable_audio_and_downloadable_
         "request_id": "fake-request",
         "duration": 1.25,
         "delivery": "both",
-        "playback_included": True,
+        "playback_requested": True,
+        "inline_audio_included": False,
+        "app_resource_playback": True,
         "file_resource_included": True,
         "file_name": metadata["file_name"],
         "file_mime_type": "audio/wav",
@@ -140,14 +142,11 @@ async def test_generate_speech_returns_metadata_playable_audio_and_downloadable_
     assert re.fullmatch(r"voxbridge-[0-9a-f]{32}\.wav", metadata["file_name"])
     assert metadata["resource_uri"].endswith(f"/{metadata['file_name']}")
     assert metadata["download_expires_at"].endswith("Z")
-    assert isinstance(output[1], AudioContent)
+    assert isinstance(output[1], ResourceLink)
+    assert output[1].uri == metadata["resource_uri"]
+    assert output[1].name == metadata["file_name"]
     assert output[1].mime_type == "audio/wav"
-    assert base64.b64decode(output[1].data) == b"fake-audio"
-    assert isinstance(output[2], ResourceLink)
-    assert output[2].uri == metadata["resource_uri"]
-    assert output[2].name == metadata["file_name"]
-    assert output[2].mime_type == "audio/wav"
-    assert output[2].size == len(b"fake-audio")
+    assert output[1].size == len(b"fake-audio")
 
 
 @pytest.mark.parametrize(
@@ -243,22 +242,22 @@ async def test_download_metadata_cannot_be_overridden_by_provider(monkeypatch):
     assert metadata["file_size_bytes"] == len(b"safe-audio")
     assert metadata["file_resource_included"] is True
     assert "private" not in metadata["file_name"]
-    assert output[2].uri == metadata["resource_uri"]
+    assert output[1].uri == metadata["resource_uri"]
 
 
 @pytest.mark.parametrize(
-    ("delivery", "content_types", "playback_included", "file_included"),
+    ("delivery", "content_types", "playback_requested", "file_included"),
     [
         ("playback", ["text", "audio"], True, False),
         ("file", ["text", "resource_link"], False, True),
-        ("both", ["text", "audio", "resource_link"], True, True),
+        ("both", ["text", "resource_link"], True, True),
     ],
 )
 async def test_delivery_selects_playback_file_or_both(
     monkeypatch,
     delivery,
     content_types,
-    playback_included,
+    playback_requested,
     file_included,
 ):
     provider = FakeProvider()
@@ -269,10 +268,16 @@ async def test_delivery_selects_playback_file_or_both(
 
     assert [item.type for item in output] == content_types
     assert metadata["delivery"] == delivery
-    assert metadata["playback_included"] is playback_included
+    assert metadata["playback_requested"] is playback_requested
+    assert metadata["inline_audio_included"] is (delivery == "playback")
+    assert metadata["app_resource_playback"] is (delivery == "both")
     assert metadata["file_resource_included"] is file_included
     assert len(provider.generated) == 1
     assert server._audio_artifacts.item_count == int(file_included)
+    if delivery == "playback":
+        assert isinstance(output[1], AudioContent)
+        assert output[1].mime_type == "audio/wav"
+        assert base64.b64decode(output[1].data) == b"fake-audio"
     if file_included:
         assert metadata["file_name"]
         assert metadata["resource_uri"]
@@ -293,12 +298,12 @@ async def test_invalid_delivery_is_rejected_before_generation(monkeypatch):
     assert provider.generated == []
 
 
-@pytest.mark.parametrize("delivery", ["file", "both"])
-async def test_pcm_file_delivery_is_rejected_before_generation(monkeypatch, delivery):
+@pytest.mark.parametrize("delivery", ["playback", "file", "both"])
+async def test_pcm_delivery_is_rejected_before_generation(monkeypatch, delivery):
     provider = FakeProvider()
     monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
 
-    with pytest.raises(ToolError, match="PCM file delivery.*use WAV"):
+    with pytest.raises(ToolError, match="PCM delivery.*use WAV"):
         await server.generate_speech("fake", "Hello", output_format="pcm", delivery=delivery)
 
     assert provider.generated == []
@@ -334,7 +339,7 @@ def test_audio_resource_capability_checks_are_non_disclosing():
 
 
 @pytest.mark.parametrize("mode", ["auto", "legacy"])
-async def test_mcp_client_receives_playback_and_downloadable_file(monkeypatch, mode):
+async def test_mcp_client_receives_downloadable_file_for_app_playback(monkeypatch, mode):
     provider = FakeProvider()
     monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
 
@@ -345,15 +350,14 @@ async def test_mcp_client_receives_playback_and_downloadable_file(monkeypatch, m
         )
 
         assert result.is_error is False
-        assert [item.type for item in result.content] == ["text", "audio", "resource_link"]
+        assert [item.type for item in result.content] == ["text", "resource_link"]
         metadata = json.loads(result.content[0].text)
-        audio = result.content[1]
-        downloadable = result.content[2]
+        downloadable = result.content[1]
         resource = await client.read_resource(downloadable.uri, cache_mode="bypass")
 
     assert downloadable.uri == metadata["resource_uri"]
     assert downloadable.name == metadata["file_name"]
-    assert downloadable.mime_type == audio.mime_type == "audio/wav"
+    assert downloadable.mime_type == "audio/wav"
     assert len(resource.contents) == 1
     assert resource.contents[0].mime_type == "audio/wav"
     assert base64.b64decode(resource.contents[0].blob) == b"fake-audio"
@@ -388,7 +392,7 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert delivery_schema["default"] == "both"
     assert set(delivery_schema["enum"]) == {"playback", "file", "both"}
     generate_meta = by_name["generate_speech"].meta
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v3.html"
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v4.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     if mode == "legacy":
@@ -426,10 +430,11 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert "VoxBridge" in document.text
     assert "downloadFile" in document.text
     assert 'id="play-pause"' in document.text
-    assert "new Audio(" in document.text
-    assert "URL.createObjectURL" in document.text
-    assert "URL.revokeObjectURL" in document.text
-    assert "media-src blob:" in document.text
+    assert "AudioContext" in document.text
+    assert "decodeAudioData" in document.text
+    assert "createBufferSource" in document.text
+    assert "URL.createObjectURL" not in document.text
+    assert "media-src blob:" not in document.text
     assert "attached-file Download action" in document.text
 
 

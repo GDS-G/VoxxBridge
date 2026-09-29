@@ -31,7 +31,9 @@ The plugin package deliberately contains no provider keys and no placeholder pub
 
 - `list_providers()` returns capabilities, defaults, and whether each adapter is configured.
 - `list_voices(provider, language?, limit?)` returns a provider voice catalog.
-- `generate_speech(..., delivery="playback" | "file" | "both")` invokes the selected provider once and returns the selected representation: playable MCP `AudioContent`, a short-lived named `ResourceLink` with a host-mediated Download button, or both. The default is `both`.
+- `generate_speech(..., delivery="playback" | "file" | "both")` invokes the selected provider once and returns the selected representation: playable MCP `AudioContent`, a short-lived named `ResourceLink` with a host-mediated Download button, or both through one file resource that the MCP App also decodes for playback. The default is `both`.
+
+`playback` returns inline MCP `AudioContent`. `file` returns a short-lived `ResourceLink`. `both` intentionally returns one `ResourceLink`; the bound MCP App reads that resource for playback so compatible hosts retain their attached-file Download action. Without MCP Apps or `serverResources`, clients still receive the readable file resource but do not get the in-widget player.
 
 | `delivery` | Immediate playback | Downloadable file |
 | --- | --- | --- |
@@ -42,7 +44,7 @@ The plugin package deliberately contains no provider keys and no placeholder pub
 The Download button is an MCP App using the standard `ui/download-file` host flow. It reads the short-lived private resource through the originating MCP connection, so no public file URL is required. Clients without MCP Apps support still receive the named `ResourceLink` and can read it with standard MCP resource APIs.
 
 Provider-specific controls are capability-gated. VoxBridge does not silently switch providers.
-`list_providers` reports both `supported_formats` and `file_delivery_formats`. Raw PCM remains available for `playback`, but `file` and `both` require a self-describing audio container such as WAV.
+`list_providers` reports both `supported_formats` and `file_delivery_formats`. Raw headerless PCM is not exposed in this developer alpha because it lacks portable sample metadata; request WAV instead.
 
 ## Private local setup
 

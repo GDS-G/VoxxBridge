@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "voxbridge",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Generate realistic AI speech for playback, file download, or both through one provider-neutral ChatGPT workflow.",
   "author": {"name": "VoxBridge"},
   "keywords": [],
