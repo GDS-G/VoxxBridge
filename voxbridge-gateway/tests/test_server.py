@@ -388,6 +388,7 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert delivery_schema["default"] == "both"
     assert set(delivery_schema["enum"]) == {"playback", "file", "both"}
     generate_meta = by_name["generate_speech"].meta
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v2.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     if mode == "legacy":
