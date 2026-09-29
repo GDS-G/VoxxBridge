@@ -388,7 +388,7 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert delivery_schema["default"] == "both"
     assert set(delivery_schema["enum"]) == {"playback", "file", "both"}
     generate_meta = by_name["generate_speech"].meta
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v2.html"
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v3.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     if mode == "legacy":
@@ -427,7 +427,10 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert "downloadFile" in document.text
     assert 'id="play-pause"' in document.text
     assert "new Audio(" in document.text
-    assert "media-src data:" in document.text
+    assert "URL.createObjectURL" in document.text
+    assert "URL.revokeObjectURL" in document.text
+    assert "media-src blob:" in document.text
+    assert "attached-file Download action" in document.text
 
 
 async def test_mcp_tool_error_is_returned_as_safe_tool_content(monkeypatch):

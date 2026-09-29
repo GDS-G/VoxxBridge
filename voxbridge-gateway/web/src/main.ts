@@ -52,6 +52,7 @@ let hostCanDownload = false;
 let isDownloading = false;
 let latestResult: ToolResult | undefined;
 let audioPlayer: HTMLAudioElement | undefined;
+let audioObjectUrl: string | undefined;
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -106,7 +107,11 @@ function clearPlayback() {
     audioPlayer.removeAttribute("src");
     audioPlayer.load();
   }
+  if (audioObjectUrl) {
+    URL.revokeObjectURL(audioObjectUrl);
+  }
   audioPlayer = undefined;
+  audioObjectUrl = undefined;
   playback.hidden = true;
   playPauseButton.disabled = false;
   playPauseButton.setAttribute("aria-pressed", "false");
@@ -122,7 +127,17 @@ function preparePlayback(audio: AudioContent | undefined) {
     if (!audio.mimeType.startsWith("audio/") || !/^[A-Za-z0-9+/]*={0,2}$/.test(audio.data)) {
       throw new Error("Invalid audio content");
     }
-    const player = new Audio(`data:${audio.mimeType};base64,${audio.data}`);
+    const decoded = atob(audio.data);
+    if (decoded.length === 0) {
+      throw new Error("Empty audio content");
+    }
+    const bytes = new Uint8Array(decoded.length);
+    for (let index = 0; index < decoded.length; index += 1) {
+      bytes[index] = decoded.charCodeAt(index);
+    }
+    const objectUrl = URL.createObjectURL(new Blob([bytes], { type: audio.mimeType }));
+    const player = new Audio(objectUrl);
+    audioObjectUrl = objectUrl;
     audioPlayer = player;
     player.preload = "metadata";
     player.addEventListener("play", () => {
@@ -231,7 +246,7 @@ function renderResult(result: ToolResult) {
     summary.textContent = "Your audio is ready for playback.";
   }
 
-  actions.hidden = !resource;
+  actions.hidden = !resource || !hostCanDownload;
   setDownloading(false);
   if (!resource && playbackReady) {
     setStatus("Ready to play. Playback mode does not include a downloadable file.");
@@ -240,7 +255,7 @@ function renderResult(result: ToolResult) {
   } else if (audio && !playbackReady) {
     setStatus("The file is ready, but playback could not be prepared.", "error");
   } else if (!hostCanDownload) {
-    setStatus("This host does not support native file downloads.", "error");
+    setStatus("Use the host's attached-file Download action below.");
   } else {
     setStatus("Ready to download.");
   }
@@ -331,8 +346,7 @@ try {
     setStatus(
       hostCanDownload
         ? "Connected. Waiting for generated audio…"
-        : "Connected, but this host does not support native file downloads.",
-      hostCanDownload ? "neutral" : "error",
+        : "Connected. File results will use the host's attached-file Download action.",
     );
   }
 } catch (error) {

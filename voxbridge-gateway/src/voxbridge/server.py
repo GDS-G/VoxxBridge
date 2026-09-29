@@ -26,7 +26,7 @@ from voxbridge.models import SpeechRequest
 from voxbridge.providers.base import ProviderError
 from voxbridge.registry import REGISTRY, close_registry
 
-_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v2.html"
+_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v3.html"
 _AUDIO_DELIVERY_UI_HTML = (
     files("voxbridge").joinpath("ui").joinpath("audio-delivery-v1.html").read_text(encoding="utf-8")
 )
