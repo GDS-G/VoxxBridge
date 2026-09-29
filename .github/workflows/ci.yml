@@ -1,0 +1,94 @@
+name: Python CI
+
+on:
+  push:
+    paths:
+      - "voxbridge-gateway/**"
+      - "voxbridge-plugin/**"
+      - "README.md"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "voxbridge-gateway/**"
+      - "voxbridge-plugin/**"
+      - "README.md"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-test-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: voxbridge-gateway
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: voxbridge-gateway/pyproject.toml
+
+      - name: Install project and build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Lint
+        run: |
+          python -m ruff format --check .
+          python -m ruff check .
+
+      - name: Test
+        run: python -m pytest
+
+      - name: Validate plugin source
+        run: |
+          python -m json.tool ../voxbridge-plugin/plugin.json > /dev/null
+          python -m json.tool ../voxbridge-plugin/.codex-plugin/plugin.json > /dev/null
+          test -f ../voxbridge-plugin/skills/voice-generation/SKILL.md
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = json.loads(Path("../voxbridge-plugin/plugin.json").read_text())
+          legacy = json.loads(
+              Path("../voxbridge-plugin/.codex-plugin/plugin.json").read_text()
+          )
+          for field in ("name", "version", "description", "author", "keywords"):
+              assert root[field] == legacy[field], field
+          assert root["extensions"]["com.openai"]["interface"] == legacy["interface"]
+          PY
+
+      - name: Smoke-test Streamable HTTP MCP
+        if: matrix.python-version == '3.12'
+        run: |
+          voxbridge &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent http://127.0.0.1:8000/healthz > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8000/healthz > /dev/null
+          python scripts/smoke_mcp.py
+
+      - name: Build source and wheel distributions
+        if: matrix.python-version == '3.12'
+        run: python -m build

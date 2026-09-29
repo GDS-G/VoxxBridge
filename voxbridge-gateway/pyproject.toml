@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling==1.29.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voxbridge-gateway"
+version = "0.2.0"
+description = "Provider-neutral MCP gateway for realistic voice generation."
+requires-python = ">=3.11"
+dependencies = [
+  "google-auth[requests]==2.59.0",
+  "httpx==0.28.1",
+  "mcp==2.2.0",
+  "pydantic==2.13.5",
+  "pydantic-settings==2.15.0",
+  "uvicorn==0.54.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build==1.3.0",
+  "hatchling==1.29.0",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "respx==0.23.1",
+  "ruff==0.16.9",
+]
+
+[project.scripts]
+voxbridge = "voxbridge.server:main"
+voxbridge-hosted = "voxbridge.hosted:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voxbridge"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

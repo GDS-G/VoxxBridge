@@ -1,0 +1,187 @@
+# VoxBridge Gateway
+
+VoxBridge is a provider-neutral MCP gateway for realistic voice generation. It exposes a common text-to-speech surface for:
+
+- ElevenLabs
+- Hume AI
+- Cartesia
+- Resemble AI
+- OpenAI
+- Deepgram
+- Google Cloud Text-to-Speech
+- Microsoft Azure Speech
+
+> **Developer alpha:** “implemented” below means the code path exists in this repository. It does not mean a public service is live, a provider integration has been exercised against a real account, or the provider has reviewed or approved this project.
+
+## Status
+
+| Area | Repository status |
+| --- | --- |
+| `list_providers`, `list_voices`, and `generate_speech` | Implemented |
+| stdio and Streamable HTTP transports | Implemented |
+| Loopback-by-default HTTP and an explicit non-loopback safety gate | Implemented |
+| Unit tests, lint, MCP smoke test, and package-build workflow | Configured for Python 3.11 and 3.12; a workflow run is the evidence that a particular revision passed |
+| Live provider calls | Require the relevant credentials and account access; not established by the repository or credential-free CI |
+| Secure MCP Tunnel | A pinned hosted image and supervisor are included; tunnel/runtime-key provisioning still happens in OpenAI Platform |
+| Hosted public endpoint, OAuth, and per-user credential storage | Not implemented or deployed by this repository |
+
+The plugin package deliberately contains no provider keys and no placeholder public MCP URL.
+
+## MCP tools
+
+- `list_providers()` returns capabilities, defaults, and whether each adapter is configured.
+- `list_voices(provider, language?, limit?)` returns a provider voice catalog.
+- `generate_speech(...)` invokes the selected provider and returns metadata plus playable MCP `AudioContent`.
+
+Provider-specific controls are capability-gated. VoxBridge does not silently switch providers.
+
+## Private local setup
+
+Run these commands from `voxbridge-gateway`.
+
+```text
+python -m venv .venv
+```
+
+Activate the environment and install the package with developer tools:
+
+```powershell
+# PowerShell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+Copy-Item .env.example .env
+```
+
+```bash
+# POSIX shell
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+cp .env.example .env
+```
+
+Keep `.env` local, fill only the provider credentials you intend to use, and start the default Streamable HTTP server:
+
+```text
+voxbridge
+```
+
+The MCP endpoint is `http://127.0.0.1:8000/mcp`. Health endpoints are:
+
+- `GET /healthz`: process health.
+- `GET /readyz`: returns success only when at least one provider is configured; no configured providers produces `503` by design.
+
+The server reads `.env` from its working directory. Do not commit `.env`, service-account files, generated credentials, or provider keys.
+
+## Provider environment variables
+
+Configure only providers you plan to use.
+
+| Provider | Required configuration |
+| --- | --- |
+| ElevenLabs | `ELEVENLABS_API_KEY` |
+| Hume AI | `HUME_API_KEY` |
+| Cartesia | `CARTESIA_API_KEY`; `CARTESIA_VERSION` is currently fixed to the supported `2026-08-14` contract. |
+| Resemble AI | `RESEMBLE_API_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| Deepgram | `DEEPGRAM_API_KEY` |
+| Google Cloud Text-to-Speech | Application Default Credentials; for local file-based ADC, set `GOOGLE_APPLICATION_CREDENTIALS`. For metadata/workload-identity ADC, set `GOOGLE_CLOUD_TTS_ENABLED=true`. `GOOGLE_CLOUD_PROJECT` is an optional quota-project override. |
+| Microsoft Azure Speech | `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` |
+
+Gateway settings are also environment variables:
+
+| Variable | Safe developer default | Purpose |
+| --- | --- | --- |
+| `VOXBRIDGE_TRANSPORT` | `streamable-http` | Select `streamable-http` or `stdio`. |
+| `VOXBRIDGE_HOST` | `127.0.0.1` | HTTP listen address. |
+| `VOXBRIDGE_PORT` | `8000` | HTTP listen port. |
+| `VOXBRIDGE_ALLOW_REMOTE_BIND` | `false` | Explicitly acknowledges a non-loopback bind; it does not add authentication. |
+| `VOXBRIDGE_LOG_LEVEL` | `INFO` | Server log level. |
+| `VOXBRIDGE_MAX_TEXT_CHARS` | `3000` | Maximum input text size. |
+| `VOXBRIDGE_MAX_AUDIO_BYTES` | `20971520` | Maximum returned audio size. |
+| `VOXBRIDGE_MAX_CONCURRENT_GENERATIONS` | `2` | Process-local generation concurrency. |
+| `VOXBRIDGE_REQUEST_TIMEOUT_SECONDS` | `60` | Outbound provider timeout. |
+| `VOXBRIDGE_ALLOWED_HOSTS` | loopback hosts | JSON array of Host-header patterns accepted by the MCP transport. |
+| `VOXBRIDGE_ALLOWED_ORIGINS` | loopback HTTP origins | JSON array of browser origins accepted by the MCP transport. |
+
+## Transport choices
+
+### stdio: the smallest private surface
+
+Use stdio when the MCP client can launch the gateway as a local subprocess. No TCP listener is created.
+
+```powershell
+$env:VOXBRIDGE_TRANSPORT = "stdio"
+voxbridge
+```
+
+```bash
+VOXBRIDGE_TRANSPORT=stdio voxbridge
+```
+
+Pass provider variables through the process environment or the local `.env` file. Do not place secret values in a checked-in MCP configuration.
+
+### Loopback HTTP
+
+The default HTTP configuration binds only to `127.0.0.1`. The gateway refuses a non-loopback address unless `VOXBRIDGE_ALLOW_REMOTE_BIND=true`. Host and Origin checks remain enabled in every bind mode. If a private proxy uses a non-loopback Host header, add its exact host pattern and origin to `VOXBRIDGE_ALLOWED_HOSTS` and `VOXBRIDGE_ALLOWED_ORIGINS`; do not use broad wildcard domains. The remote-bind override is a safety acknowledgement, not access control, encryption, or authentication.
+
+### Secure MCP Tunnel for private development
+
+For a remote private developer client, run VoxBridge on loopback and point a separately managed Secure MCP Tunnel at `http://127.0.0.1:8000/mcp`. The tunnel supplies private reachability without a public gateway listener.
+
+The repository-root [`Dockerfile`](../Dockerfile) packages this topology with the official OpenAI `tunnel-client` pinned to `v0.0.15`. `voxbridge-hosted` supervises both processes, forces the gateway onto loopback, and connects the tunnel client to the stateless Streamable HTTP endpoint. This HTTP boundary also tolerates a brief host deployment overlap; the unsupported multiple-stdio-child topology is not used.
+
+The image still needs `CONTROL_PLANE_TUNNEL_ID`, `CONTROL_PLANE_API_KEY`, and at least one provider credential at runtime. Tunnel and key creation are intentionally not automated or stored in the image.
+
+Only use a non-loopback gateway bind when another private sidecar or network topology truly requires it. Keep the listener unreachable from the public internet and set `VOXBRIDGE_ALLOW_REMOTE_BIND=true` only after that boundary is in place. The provided hosted image does not require this override.
+
+## Docker loopback caveat
+
+`127.0.0.1` inside a container is the container’s loopback interface. A gateway bound there is not reachable through a normal Docker published port. For host-only developer access, bind the process to all container interfaces but publish the port only on the host loopback interface:
+
+Run this example from the repository root:
+
+```bash
+docker build -t voxbridge-gateway ./voxbridge-gateway
+docker run --rm \
+  --env-file ./voxbridge-gateway/.env \
+  -e VOXBRIDGE_HOST=0.0.0.0 \
+  -e VOXBRIDGE_ALLOW_REMOTE_BIND=true \
+  -p 127.0.0.1:8000:8000 \
+  voxbridge-gateway
+```
+
+The `0.0.0.0` bind exists only inside the container in this example; the host publishes it on `127.0.0.1`. Do not change the publish address to a public interface for this developer-alpha workflow. A container-to-container tunnel needs an equivalently private network boundary.
+
+## Provider-control notes
+
+- Speed is validated against the selected vendor's current range, which is returned by `list_providers`.
+- ElevenLabs rejects explicit language selection on `eleven_multilingual_v2`; `eleven_v3` rejects speed, similarity boost, and speaker boost controls that it does not support. These model caveats are returned in `control_notes`.
+- Hume Octave 2 requires a saved voice. Hume delivery instructions currently require `model="octave-1"`; Octave 2 requests with instructions fail before any billable call.
+- Cartesia emotion values and volume are validated against the current `2026-08-14` contract; emotion is rejected for an explicitly non-English language.
+
+## Checks
+
+```text
+python -m ruff format --check .
+python -m ruff check .
+python -m pytest
+python -m build
+```
+
+To exercise a running Streamable HTTP server end to end without spending provider credits:
+
+```text
+python scripts/smoke_mcp.py
+```
+
+Lint, unit tests, and a successful wheel/source build validate the repository mechanics. They do not validate provider credentials, live vendor APIs, account entitlements, content-policy compliance, or audio quality.
+
+## Before a public launch
+
+A public release needs a stable HTTPS MCP URL and OAuth between the MCP client and VoxBridge. Environment-global provider credentials must be replaced by encrypted, revocable, per-user credential storage with appropriate metering, rate limits, audit events, and retention controls.
+
+Each provider’s current terms, acceptable-use rules, voice-cloning or impersonation requirements, consent requirements, and disclosure obligations must also be reviewed before enabling that provider publicly. Do not describe the service as public, production-ready, provider-approved, or live until those controls are implemented and independently verified.
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the release boundary and connection example.
+
+Official references: [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels), [plugin authentication](https://developers.openai.com/plugins/build/auth), and [building an MCP server](https://developers.openai.com/plugins/build/mcp-server).

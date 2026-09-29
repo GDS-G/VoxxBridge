@@ -1,0 +1,37 @@
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python environments and caches
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+
+# Python package outputs
+build/
+dist/
+*.egg-info/
+**/build/
+**/dist/
+**/*.egg-info/
+
+# Locally assembled release candidates (publish these as release assets)
+artifacts/
+
+# Coverage and local tooling
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.idea/
+.vscode/

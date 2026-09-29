@@ -1,0 +1,6 @@
+*
+!voxbridge-gateway/
+!voxbridge-gateway/pyproject.toml
+!voxbridge-gateway/README.md
+!voxbridge-gateway/src/
+!voxbridge-gateway/src/**
