@@ -5,11 +5,13 @@ import base64
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from importlib.resources import files
 from typing import Any, Literal
 from uuid import uuid4
 
 import uvicorn
 from mcp.server import MCPServer
+from mcp.server.apps import Apps, ResourceCsp
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import AudioContent, ResourceLink, TextContent, ToolAnnotations
@@ -23,6 +25,21 @@ from voxbridge.config import settings
 from voxbridge.models import SpeechRequest
 from voxbridge.providers.base import ProviderError
 from voxbridge.registry import REGISTRY, close_registry
+
+_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v1.html"
+_AUDIO_DELIVERY_UI_HTML = (
+    files("voxbridge").joinpath("ui").joinpath("audio-delivery-v1.html").read_text(encoding="utf-8")
+)
+_apps = Apps()
+_apps.add_html_resource(
+    _AUDIO_DELIVERY_UI_URI,
+    _AUDIO_DELIVERY_UI_HTML,
+    name="voxbridge-audio-delivery",
+    title="VoxBridge audio delivery",
+    description="Download generated VoxBridge audio when file delivery is selected.",
+    csp=ResourceCsp(connect_domains=[], resource_domains=[]),
+    prefers_border=True,
+)
 
 
 @asynccontextmanager
@@ -42,6 +59,7 @@ mcp = MCPServer(
         "Generated audio is synthetic. Use delivery='playback', 'file', or 'both' "
         "to choose the returned representation."
     ),
+    extensions=[_apps],
     lifespan=_lifespan,
     log_level=settings.voxbridge_log_level,
 )
@@ -240,6 +258,10 @@ async def list_voices(
 
 @mcp.tool(
     title="Generate realistic speech",
+    meta={
+        "ui": {"resourceUri": _AUDIO_DELIVERY_UI_URI},
+        "openai/outputTemplate": _AUDIO_DELIVERY_UI_URI,
+    },
     annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=False,

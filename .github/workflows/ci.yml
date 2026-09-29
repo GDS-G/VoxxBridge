@@ -44,6 +44,14 @@ jobs:
           cache: pip
           cache-dependency-path: voxbridge-gateway/pyproject.toml
 
+      - name: Set up Node.js
+        if: matrix.python-version == '3.12'
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: voxbridge-gateway/web/package-lock.json
+
       - name: Install project and build tooling
         run: |
           python -m pip install --upgrade pip
@@ -56,6 +64,13 @@ jobs:
 
       - name: Test
         run: python -m pytest
+
+      - name: Validate MCP App bundle
+        if: matrix.python-version == '3.12'
+        run: |
+          npm --prefix web ci
+          npm --prefix web run check
+          git diff --exit-code -- src/voxbridge/ui/audio-delivery-v1.html
 
       - name: Validate plugin source
         run: |

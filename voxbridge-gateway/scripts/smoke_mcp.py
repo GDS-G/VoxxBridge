@@ -23,6 +23,18 @@ async def check(url: str) -> None:
             "both",
         }:
             raise RuntimeError("generate_speech delivery schema is unavailable")
+        ui_uri = "ui://voxbridge/audio-delivery-v1.html"
+        if generate.meta is None or generate.meta.get("ui", {}).get("resourceUri") != ui_uri:
+            raise RuntimeError("generate_speech MCP App binding is unavailable")
+        resources = await client.list_resources(cache_mode="reload")
+        ui_resources = {str(item.uri): item for item in resources.resources}
+        if ui_uri not in ui_resources:
+            raise RuntimeError("VoxBridge audio delivery app resource is unavailable")
+        if ui_resources[ui_uri].mime_type != "text/html;profile=mcp-app":
+            raise RuntimeError("VoxBridge audio delivery app has an invalid media type")
+        ui_document = await client.read_resource(ui_uri, cache_mode="bypass")
+        if not ui_document.contents or "downloadFile" not in ui_document.contents[0].text:
+            raise RuntimeError("VoxBridge audio delivery app is invalid")
         templates = await client.list_resource_templates(cache_mode="reload")
         template_uris = {str(item.uri_template) for item in templates.resource_templates}
         if not {

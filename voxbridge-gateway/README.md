@@ -31,7 +31,15 @@ The plugin package deliberately contains no provider keys and no placeholder pub
 
 - `list_providers()` returns capabilities, defaults, and whether each adapter is configured.
 - `list_voices(provider, language?, limit?)` returns a provider voice catalog.
-- `generate_speech(..., delivery="playback" | "file" | "both")` invokes the selected provider once and returns the selected representation: playable MCP `AudioContent`, a short-lived named `ResourceLink` that compatible hosts can download as an audio file, or both. The default is `both`.
+- `generate_speech(..., delivery="playback" | "file" | "both")` invokes the selected provider once and returns the selected representation: playable MCP `AudioContent`, a short-lived named `ResourceLink` with a host-mediated Download button, or both. The default is `both`.
+
+| `delivery` | Immediate playback | Downloadable file |
+| --- | --- | --- |
+| `playback` | Yes | No |
+| `file` | No | Yes |
+| `both` | Yes | Yes |
+
+The Download button is an MCP App using the standard `ui/download-file` host flow. It reads the short-lived private resource through the originating MCP connection, so no public file URL is required. Clients without MCP Apps support still receive the named `ResourceLink` and can read it with standard MCP resource APIs.
 
 Provider-specific controls are capability-gated. VoxBridge does not silently switch providers.
 `list_providers` reports both `supported_formats` and `file_delivery_formats`. Raw PCM remains available for `playback`, but `file` and `both` require a self-describing audio container such as WAV.
@@ -178,9 +186,9 @@ To exercise a running Streamable HTTP server end to end without spending provide
 python scripts/smoke_mcp.py
 ```
 
-Lint, unit tests, and a successful wheel/source build validate the repository mechanics. They do not validate provider credentials, live vendor APIs, account entitlements, content-policy compliance, or audio quality.
+The MCP App source lives under `web/`; `npm ci` followed by `npm run build` regenerates the single-file HTML bundled into the Python package. Lint, unit tests, and successful wheel/source and UI builds validate repository mechanics. They do not validate provider credentials, live vendor APIs, account entitlements, content-policy compliance, or audio quality.
 
-Private-alpha downloads use opaque, short-lived MCP resource links backed by a bounded in-memory cache on the single gateway replica. They need no public file URL and avoid duplicating audio bytes in the initial `both` response. Links expire, and a deployment restart invalidates them. Longer production audio should use authenticated durable storage with short-lived downloads and lifecycle deletion.
+Private-alpha downloads use opaque, short-lived MCP resource links backed by a bounded in-memory cache on the single gateway replica. The MCP App resolves a selected link through the host and requests a confirmed host-mediated file save. Downloads need no public file URL, and the initial `both` response does not duplicate audio bytes. Links expire, and a deployment restart invalidates them. Longer production audio should use authenticated durable storage with short-lived downloads and lifecycle deletion.
 
 ## Before a public launch
 

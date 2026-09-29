@@ -387,10 +387,43 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     delivery_schema = by_name["generate_speech"].input_schema["properties"]["delivery"]
     assert delivery_schema["default"] == "both"
     assert set(delivery_schema["enum"]) == {"playback", "file", "both"}
+    generate_meta = by_name["generate_speech"].meta
+    assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
+    assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     if mode == "legacy":
         assert protocol_version in HANDSHAKE_PROTOCOL_VERSIONS
     else:
         assert protocol_version == LATEST_PROTOCOL_VERSION
+
+
+async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
+    async def do_not_close_global_registry(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(server, "close_registry", do_not_close_global_registry)
+
+    async with Client(server.mcp, mode="auto") as client:
+        extensions = client.session.server_capabilities.extensions
+        resources = await client.list_resources(cache_mode="reload")
+        ui_resource = next(
+            item for item in resources.resources if str(item.uri) == server._AUDIO_DELIVERY_UI_URI
+        )
+        result = await client.read_resource(server._AUDIO_DELIVERY_UI_URI, cache_mode="bypass")
+
+    assert extensions is not None
+    assert "io.modelcontextprotocol/ui" in extensions
+    assert ui_resource.mime_type == "text/html;profile=mcp-app"
+    assert ui_resource.meta == {
+        "ui": {
+            "csp": {"connectDomains": [], "resourceDomains": []},
+            "prefersBorder": True,
+        }
+    }
+    assert len(result.contents) == 1
+    document = result.contents[0]
+    assert document.mime_type == "text/html;profile=mcp-app"
+    assert "VoxBridge" in document.text
+    assert "downloadFile" in document.text
 
 
 async def test_mcp_tool_error_is_returned_as_safe_tool_content(monkeypatch):

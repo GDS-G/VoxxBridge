@@ -2,22 +2,21 @@
   "interface": {
     "displayName": "VoxBridge",
     "shortDescription": "Realistic AI voice files",
-    "longDescription": "Use a provider-neutral workflow to generate realistic AI speech with playback and named audio-file resources across ElevenLabs, Hume, Cartesia, Resemble AI, OpenAI, Deepgram, Google Cloud Text-to-Speech, and Microsoft Azure Speech. Compatible hosts can present those resources as downloads. VoxBridge selects provider-specific controls without forcing users to learn eight APIs.",
+    "longDescription": "Use a provider-neutral workflow to generate realistic AI speech for immediate playback, an explicit file download, or both across ElevenLabs, Hume, Cartesia, Resemble AI, OpenAI, Deepgram, Google Cloud Text-to-Speech, and Microsoft Azure Speech. VoxBridge selects provider-specific controls without forcing users to learn eight APIs.",
     "developerName": "VoxBridge",
     "category": "Productivity",
     "capabilities": [
       "Interactive"
     ],
     "defaultPrompt": [
-      "Show me the voice providers available through VoxBridge.",
-      "Help me choose and preview voices for this script.",
-      "Generate this script and give me the downloadable audio file.",
+      "Read this aloud through VoxBridge without creating a download.",
+      "Generate this script as a downloadable audio file without playing it.",
       "Read this aloud and also give me the audio file."
     ]
   },
   "name": "voxbridge",
   "version": "0.2.0",
-  "description": "Generate realistic AI speech and return playback plus named audio-file resources through one provider-neutral ChatGPT workflow.",
+  "description": "Generate realistic AI speech for playback, file download, or both through one provider-neutral ChatGPT workflow.",
   "author": {
     "name": "VoxBridge"
   },

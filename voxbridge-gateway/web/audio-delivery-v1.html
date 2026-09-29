@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>VoxBridge audio delivery</title>
+  </head>
+  <body>
+    <main class="card" aria-labelledby="title">
+      <div class="heading">
+        <div class="mark" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div>
+          <p class="eyebrow">VoxBridge</p>
+          <h1 id="title">Audio delivery</h1>
+        </div>
+      </div>
+
+      <p id="summary" class="summary">Waiting for generated audio…</p>
+
+      <dl id="details" class="details" hidden>
+        <div>
+          <dt>Mode</dt>
+          <dd id="mode">—</dd>
+        </div>
+        <div>
+          <dt>File</dt>
+          <dd id="file-name">—</dd>
+        </div>
+        <div>
+          <dt>Format</dt>
+          <dd id="format">—</dd>
+        </div>
+        <div>
+          <dt>Size</dt>
+          <dd id="file-size">—</dd>
+        </div>
+        <div id="expiry-row" hidden>
+          <dt>Available until</dt>
+          <dd id="expiry">—</dd>
+        </div>
+      </dl>
+
+      <div id="actions" class="actions" hidden>
+        <button id="download" type="button">
+          <span class="button-label">Download audio</span>
+          <span class="spinner" aria-hidden="true"></span>
+        </button>
+      </div>
+
+      <p id="status" class="status" role="status" aria-live="polite" aria-atomic="true">
+        Connecting to the host…
+      </p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

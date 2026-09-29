@@ -1,6 +1,6 @@
 # VoxBridge local plugin package
 
-This directory contains the local `0.2.0` developer-alpha plugin candidate and its voice-generation skill instructions. Users can choose immediate playback, a named binary audio-file resource, or both; compatible hosts can present the resource as a download. The registered private plugin remains on `0.1.0` until the gateway is verified through a real provider and Secure MCP Tunnel connection. This package does not contain the gateway, provider credentials, tunnel configuration, or a public MCP connection.
+This directory contains the local `0.2.0` developer-alpha plugin candidate and its voice-generation skill instructions. Users can explicitly choose immediate playback, a downloadable audio file, or both. The gateway's MCP App presents the file through a host-mediated Download button, while non-UI MCP clients retain standard resource access. This package does not contain the gateway, provider credentials, tunnel configuration, or a public MCP connection.
 
 Raw PCM is playback-only in this developer alpha. File or combined delivery uses a self-describing format such as WAV, MP3, FLAC, AAC, Ogg/Opus, M4A, or WebM as supported by the selected provider.
 
@@ -8,7 +8,7 @@ Raw PCM is playback-only in this developer alpha. File or combined delivery uses
 
 - `plugin.json`, `.codex-plugin/plugin.json`, and `skills/voice-generation/SKILL.md` are implemented in this repository.
 - No `mcp.json` is included because the repository does not establish a stable deployed HTTPS endpoint.
-- No live provider, tunnel, OAuth flow, or public deployment is implied or verified by this package.
+- Provider credentials, tunnel configuration, OAuth, and hosting remain outside this package.
 
 For private development, start the gateway using its [private setup instructions](../voxbridge-gateway/README.md), then configure the developer client for local stdio, loopback HTTP, or a separately managed Secure MCP Tunnel as appropriate. Keep provider keys in the gateway environment; never put them in this plugin directory or type them into chat.
 

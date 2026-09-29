@@ -12,7 +12,7 @@ VoxBridge is a provider-neutral voice-generation plugin and MCP gateway. This re
 
 ## Current release boundary
 
-The gateway is implemented and verified locally with mocked provider contracts, current and legacy MCP clients, a real loopback Streamable HTTP smoke test, lint, and package builds. Speech can be returned for immediate playback, as a short-lived named audio-file resource, or both from one provider generation. The hosted image keeps the MCP listener on container loopback and uses an outbound-only Secure MCP Tunnel; it does not expose provider-funded tools on a public unauthenticated URL.
+The gateway is implemented and verified locally with mocked provider contracts, current and legacy MCP clients, a real loopback Streamable HTTP smoke test, lint, and package builds. Speech can be returned for immediate playback, as a short-lived named audio-file resource, or both from one provider generation. File-capable results include an MCP App that presents an explicit host-mediated Download button while retaining the underlying resource link for non-UI clients. The hosted image keeps the MCP listener on container loopback and uses an outbound-only Secure MCP Tunnel; it does not expose provider-funded tools on a public unauthenticated URL.
 
 Live use requires an OpenAI tunnel ID, a tunnel runtime key, and at least one provider credential. Credential-free CI cannot establish account entitlements, vendor availability, or audio quality, so each deployment still needs a low-cost live acceptance check. Keep all secrets in the hosting platform's sealed variables—never in this repository or chat.
 
