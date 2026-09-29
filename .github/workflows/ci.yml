@@ -76,6 +76,7 @@ jobs:
         run: |
           python -m json.tool ../voxbridge-plugin/plugin.json > /dev/null
           python -m json.tool ../voxbridge-plugin/.codex-plugin/plugin.json > /dev/null
+          python -m json.tool ../voxbridge-plugin/.app.json > /dev/null
           test -f ../voxbridge-plugin/skills/voice-generation/SKILL.md
           python - <<'PY'
           import json
@@ -85,9 +86,20 @@ jobs:
           legacy = json.loads(
               Path("../voxbridge-plugin/.codex-plugin/plugin.json").read_text()
           )
+          app = json.loads(Path("../voxbridge-plugin/.app.json").read_text())
           for field in ("name", "version", "description", "author", "keywords"):
               assert root[field] == legacy[field], field
           assert root["extensions"]["com.openai"]["interface"] == legacy["interface"]
+          assert root["extensions"]["com.openai"]["apps"] == "./.app.json"
+          assert legacy["apps"] == "./.app.json"
+          assert app == {
+              "apps": {
+                  "dev-6abc243bda748191a4195fb818ade81f": {
+                      "id": "asdk_app_6abc243bda748191a4195fb818ade81f",
+                      "required": True,
+                  }
+              }
+          }
           PY
 
       - name: Smoke-test Streamable HTTP MCP

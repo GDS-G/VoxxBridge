@@ -179,6 +179,22 @@ button:disabled {
   opacity: 0.55;
 }
 
+button.secondary {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+button.secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--surface), var(--accent) 10%);
+}
+
+.playback-icon {
+  width: 1em;
+  line-height: 1;
+  text-align: center;
+}
+
 .spinner {
   display: none;
   width: 14px;

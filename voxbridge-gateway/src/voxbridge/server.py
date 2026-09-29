@@ -36,7 +36,7 @@ _apps.add_html_resource(
     _AUDIO_DELIVERY_UI_HTML,
     name="voxbridge-audio-delivery",
     title="VoxBridge audio delivery",
-    description="Download generated VoxBridge audio when file delivery is selected.",
+    description="Play generated VoxBridge audio, download it as a file, or do both.",
     csp=ResourceCsp(connect_domains=[], resource_domains=[]),
     prefers_border=True,
 )

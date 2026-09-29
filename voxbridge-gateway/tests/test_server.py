@@ -424,6 +424,9 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert document.mime_type == "text/html;profile=mcp-app"
     assert "VoxBridge" in document.text
     assert "downloadFile" in document.text
+    assert 'id="play-pause"' in document.text
+    assert "new Audio(" in document.text
+    assert "media-src data:" in document.text
 
 
 async def test_mcp_tool_error_is_returned_as_safe_tool_content(monkeypatch):

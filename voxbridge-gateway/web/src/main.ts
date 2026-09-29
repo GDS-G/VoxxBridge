@@ -4,6 +4,7 @@ import "./styles.css";
 type ToolResult = McpUiToolResultNotification["params"];
 type ResultContent = NonNullable<ToolResult["content"]>[number];
 type ResourceLink = Extract<ResultContent, { type: "resource_link" }>;
+type AudioContent = Extract<ResultContent, { type: "audio" }>;
 type DeliveryMode = "playback" | "file" | "both";
 
 type SpeechMetadata = {
@@ -31,6 +32,10 @@ const format = requiredElement<HTMLElement>("format");
 const fileSize = requiredElement<HTMLElement>("file-size");
 const expiryRow = requiredElement<HTMLElement>("expiry-row");
 const expiry = requiredElement<HTMLElement>("expiry");
+const playback = requiredElement<HTMLElement>("playback");
+const playPauseButton = requiredElement<HTMLButtonElement>("play-pause");
+const playbackIcon = requiredElement<HTMLElement>("playback-icon");
+const playbackLabel = requiredElement<HTMLElement>("playback-label");
 const actions = requiredElement<HTMLElement>("actions");
 const downloadButton = requiredElement<HTMLButtonElement>("download");
 const buttonLabel = downloadButton.querySelector<HTMLElement>(".button-label");
@@ -46,6 +51,7 @@ let currentResource: ResourceLink | undefined;
 let hostCanDownload = false;
 let isDownloading = false;
 let latestResult: ToolResult | undefined;
+let audioPlayer: HTMLAudioElement | undefined;
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -90,6 +96,68 @@ function findResourceLink(content: ToolResult["content"]): ResourceLink | undefi
   );
 }
 
+function findAudioContent(content: ToolResult["content"]): AudioContent | undefined {
+  return (content ?? []).find((item): item is AudioContent => item.type === "audio");
+}
+
+function clearPlayback() {
+  if (audioPlayer) {
+    audioPlayer.pause();
+    audioPlayer.removeAttribute("src");
+    audioPlayer.load();
+  }
+  audioPlayer = undefined;
+  playback.hidden = true;
+  playPauseButton.disabled = false;
+  playPauseButton.setAttribute("aria-pressed", "false");
+  playbackIcon.textContent = "▶";
+  playbackLabel.textContent = "Play audio";
+}
+
+function preparePlayback(audio: AudioContent | undefined) {
+  clearPlayback();
+  if (!audio) return false;
+
+  try {
+    if (!audio.mimeType.startsWith("audio/") || !/^[A-Za-z0-9+/]*={0,2}$/.test(audio.data)) {
+      throw new Error("Invalid audio content");
+    }
+    const player = new Audio(`data:${audio.mimeType};base64,${audio.data}`);
+    audioPlayer = player;
+    player.preload = "metadata";
+    player.addEventListener("play", () => {
+      if (audioPlayer !== player) return;
+      playPauseButton.setAttribute("aria-pressed", "true");
+      playbackIcon.textContent = "❚❚";
+      playbackLabel.textContent = "Pause audio";
+      setStatus("Playing audio.");
+    });
+    player.addEventListener("pause", () => {
+      if (audioPlayer !== player || player.ended) return;
+      playPauseButton.setAttribute("aria-pressed", "false");
+      playbackIcon.textContent = "▶";
+      playbackLabel.textContent = "Play audio";
+    });
+    player.addEventListener("ended", () => {
+      if (audioPlayer !== player) return;
+      playPauseButton.setAttribute("aria-pressed", "false");
+      playbackIcon.textContent = "▶";
+      playbackLabel.textContent = "Play again";
+      setStatus("Playback complete.", "success");
+    });
+    player.addEventListener("error", () => {
+      if (audioPlayer !== player) return;
+      playPauseButton.disabled = true;
+      setStatus("This host could not play the generated audio.", "error");
+    });
+    playback.hidden = false;
+    return true;
+  } catch {
+    clearPlayback();
+    return false;
+  }
+}
+
 function deriveMode(metadata: SpeechMetadata, content: ToolResult["content"]): DeliveryMode {
   if (metadata.delivery === "playback" || metadata.delivery === "file" || metadata.delivery === "both") {
     return metadata.delivery;
@@ -130,6 +198,7 @@ function formatExpiry(value: string | undefined) {
 function renderResult(result: ToolResult) {
   latestResult = result;
   if (result.isError) {
+    clearPlayback();
     currentResource = undefined;
     actions.hidden = true;
     details.hidden = true;
@@ -140,10 +209,12 @@ function renderResult(result: ToolResult) {
 
   const metadata = parseMetadata(result.content);
   const resource = findResourceLink(result.content);
+  const audio = findAudioContent(result.content);
   const delivery = deriveMode(metadata, result.content);
   const expiresAt = formatExpiry(metadata.download_expires_at);
 
   currentResource = resource;
+  const playbackReady = preparePlayback(audio);
   details.hidden = false;
   mode.textContent = modeLabel(delivery);
   fileName.textContent = resource?.name ?? metadata.file_name ?? "No file included";
@@ -162,12 +233,30 @@ function renderResult(result: ToolResult) {
 
   actions.hidden = !resource;
   setDownloading(false);
-  if (!resource) {
-    setStatus("Playback mode does not include a downloadable file.");
+  if (!resource && playbackReady) {
+    setStatus("Ready to play. Playback mode does not include a downloadable file.");
+  } else if (!resource) {
+    setStatus("The generated audio could not be prepared for playback.", "error");
+  } else if (audio && !playbackReady) {
+    setStatus("The file is ready, but playback could not be prepared.", "error");
   } else if (!hostCanDownload) {
     setStatus("This host does not support native file downloads.", "error");
   } else {
     setStatus("Ready to download.");
+  }
+}
+
+async function togglePlayback() {
+  if (!audioPlayer) return;
+  if (!audioPlayer.paused) {
+    audioPlayer.pause();
+    setStatus("Playback paused.");
+    return;
+  }
+  try {
+    await audioPlayer.play();
+  } catch {
+    setStatus("Playback could not start. Try the play button again.", "error");
   }
 }
 
@@ -198,6 +287,10 @@ downloadButton.addEventListener("click", () => {
   void downloadCurrentResource();
 });
 
+playPauseButton.addEventListener("click", () => {
+  void togglePlayback();
+});
+
 app.addEventListener("toolinput", (params) => {
   const requested = params.arguments?.delivery;
   if (requested === "playback" || requested === "file" || requested === "both") {
@@ -205,6 +298,7 @@ app.addEventListener("toolinput", (params) => {
   }
   latestResult = undefined;
   currentResource = undefined;
+  clearPlayback();
   actions.hidden = true;
   summary.textContent = "Generating audio…";
   setStatus("Waiting for the speech provider.");
@@ -214,10 +308,18 @@ app.addEventListener("toolresult", renderResult);
 
 app.addEventListener("toolcancelled", (params) => {
   currentResource = undefined;
+  clearPlayback();
   actions.hidden = true;
   summary.textContent = "Audio generation was cancelled.";
   setStatus(params.reason ? `Cancelled: ${params.reason}` : "Cancelled.");
 });
+
+app.onteardown = () => {
+  clearPlayback();
+  return {};
+};
+
+window.addEventListener("pagehide", clearPlayback);
 
 try {
   await app.connect();

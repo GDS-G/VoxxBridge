@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; font-src 'none'; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <title>VoxBridge audio delivery</title>
   </head>
@@ -45,6 +45,13 @@
           <dd id="expiry">—</dd>
         </div>
       </dl>
+
+      <div id="playback" class="actions" hidden>
+        <button id="play-pause" class="secondary" type="button" aria-pressed="false">
+          <span id="playback-icon" class="playback-icon" aria-hidden="true">▶</span>
+          <span id="playback-label">Play audio</span>
+        </button>
+      </div>
 
       <div id="actions" class="actions" hidden>
         <button id="download" type="button">
