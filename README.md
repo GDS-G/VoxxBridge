@@ -7,6 +7,7 @@ VoxBridge is a provider-neutral voice-generation plugin and MCP gateway. This re
 - [`voxbridge-gateway`](voxbridge-gateway/README.md): Python MCP server, eight provider adapters, tests, local Docker packaging, and deployment guidance.
 - [`voxbridge-plugin`](voxbridge-plugin/README.md): plugin manifest and voice-generation skill.
 - [`Dockerfile`](Dockerfile): private hosted image that combines VoxBridge with the official OpenAI Secure MCP Tunnel client.
+- [`third_party/openai-tunnel-client`](third_party/openai-tunnel-client/README.md): pinned upstream license and attribution for the bundled tunnel-client binary.
 - [GitHub workflows](.github/workflows): test/build CI and multi-platform GHCR publishing.
 
 ## Current release boundary

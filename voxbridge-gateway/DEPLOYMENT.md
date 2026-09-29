@@ -30,11 +30,11 @@ OpenAI Platform still provisions the tunnel ID and runtime API key. They are run
 
 Use GitHub for source, CI, and the GHCR image, and use Railway as the always-on compute host. GitHub Pages is static hosting and cannot run this Python service. Railway currently requires either its limited new-user trial or a paid Hobby plan; review the current price before activating it.
 
-1. Push this repository and let both GitHub workflows pass. The container workflow publishes `ghcr.io/gds-g/voxbridge-gateway:latest` plus immutable commit tags.
+1. Push this repository and let both GitHub workflows pass. The container workflow repeats the quality gate, smoke-tests an amd64 image, and only then publishes `ghcr.io/gds-g/voxbridge-gateway:latest` plus a commit-derived `sha-*` tag. Registry tags can move; record and pin the published OCI digest for an immutable deployment.
 2. In OpenAI Platform, create or select a Secure MCP Tunnel and create a separate runtime API key whose principal has **Tunnels Read + Use**. Do not use an admin key for the daemon.
 3. In Railway, create one private persistent service from `GDS-G/VoxxBridge`. The root `Dockerfile` is detected automatically. Do not generate a public domain and disable Serverless/sleep behavior.
 4. Add sealed Railway variables for `CONTROL_PLANE_TUNNEL_ID`, `CONTROL_PLANE_API_KEY`, and at least one provider's required variables. Do not paste their values into chat, source control, build arguments, or image labels.
-5. Keep one normal replica. The hosted topology uses stateless HTTP between `tunnel-client` and VoxBridge, so a short deployment overlap is safe; provider concurrency and quotas still apply independently to every replica.
+5. Keep one normal replica. A short deployment overlap is safe only when old and new replicas use equivalent, protocol-compatible stateless HTTP backends; otherwise stop the old replica first or use a separate tunnel ID. Provider concurrency and quotas apply independently to every replica.
 6. Deploy, confirm the logs show a successful tunnel connection, and verify tunnel readiness—not only process liveness—before connecting a client. Then enable ChatGPT developer mode, create the connector using **Tunnel**, and select the same tunnel ID.
 7. Run `list_providers`, verify the intended provider reports `configured: true`, list a few voices, and make a short, low-cost synthesis before treating the deployment as usable.
 
@@ -50,7 +50,7 @@ The required deployment variables are:
 
 Optional operational defaults such as `VOXBRIDGE_MAX_TEXT_CHARS`, `VOXBRIDGE_MAX_AUDIO_BYTES`, `VOXBRIDGE_MAX_CONCURRENT_GENERATIONS`, and `VOXBRIDGE_REQUEST_TIMEOUT_SECONDS` can also be set as sealed variables. The hosted launcher always forces the gateway transport to loopback Streamable HTTP and ignores attempts to replace its internal MCP target.
 
-If a sidecar or isolated container network requires VoxBridge to listen on a non-loopback interface, first establish the private network boundary, then set both `VOXBRIDGE_HOST` and `VOXBRIDGE_ALLOW_REMOTE_BIND=true`. Host and Origin validation remains active; configure the exact private proxy host/origin through `VOXBRIDGE_ALLOWED_HOSTS` and `VOXBRIDGE_ALLOWED_ORIGINS` if the loopback defaults do not match. Never use broad wildcard domains or treat the override as a security control.
+If a sidecar or isolated container network requires VoxBridge to listen on a non-loopback interface, launch standalone `voxbridge` or provide a custom entrypoint after establishing the private network boundary, then set both `VOXBRIDGE_HOST` and `VOXBRIDGE_ALLOW_REMOTE_BIND=true`. The supplied `voxbridge-hosted` launcher always forces loopback. Host and Origin validation remains active; configure the exact private proxy host/origin through `VOXBRIDGE_ALLOWED_HOSTS` and `VOXBRIDGE_ALLOWED_ORIGINS` if the loopback defaults do not match. Never use broad wildcard domains or treat the override as a security control.
 
 ### Docker networking
 

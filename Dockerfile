@@ -26,6 +26,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY --from=tunnel-client /usr/bin/tunnel-client /usr/local/bin/tunnel-client
+COPY third_party/openai-tunnel-client/LICENSE \
+     third_party/openai-tunnel-client/NOTICE \
+     /usr/share/doc/openai-tunnel-client/
 COPY voxbridge-gateway/pyproject.toml voxbridge-gateway/README.md ./
 COPY voxbridge-gateway/src ./src
 

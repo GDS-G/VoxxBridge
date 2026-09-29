@@ -1,6 +1,7 @@
 name: Python CI
 
 on:
+  workflow_call:
   push:
     paths:
       - "voxbridge-gateway/**"

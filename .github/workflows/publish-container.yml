@@ -7,7 +7,9 @@ on:
     paths:
       - "Dockerfile"
       - ".dockerignore"
+      - "third_party/**"
       - "voxbridge-gateway/**"
+      - ".github/workflows/ci.yml"
       - ".github/workflows/publish-container.yml"
   workflow_dispatch:
 
@@ -23,7 +25,39 @@ env:
   IMAGE_NAME: ghcr.io/gds-g/voxbridge-gateway
 
 jobs:
+  quality-gate:
+    uses: ./.github/workflows/ci.yml
+
+  container-smoke:
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build amd64 smoke image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: voxbridge-gateway:smoke
+          cache-from: type=gha,scope=container-smoke
+          cache-to: type=gha,scope=container-smoke,mode=max
+
+      - name: Verify packaged gateway and tunnel client
+        run: |
+          docker run --rm --entrypoint python voxbridge-gateway:smoke \
+            -c "import voxbridge; import voxbridge.hosted; assert voxbridge.__version__ == '0.2.0'"
+          docker run --rm --entrypoint tunnel-client voxbridge-gateway:smoke --version
+
   build-and-push:
+    needs: [quality-gate, container-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -62,7 +96,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=container-smoke
+            type=gha,scope=publish
+          cache-to: type=gha,scope=publish,mode=max
           provenance: mode=max
           sbom: true

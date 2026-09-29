@@ -4,3 +4,6 @@
 !voxbridge-gateway/README.md
 !voxbridge-gateway/src/
 !voxbridge-gateway/src/**
+!third_party/
+!third_party/openai-tunnel-client/
+!third_party/openai-tunnel-client/**
