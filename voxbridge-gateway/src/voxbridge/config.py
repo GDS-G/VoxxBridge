@@ -22,6 +22,15 @@ class Settings(BaseSettings):
         le=100 * 1024 * 1024,
     )
     voxbridge_max_concurrent_generations: int = Field(default=2, ge=1, le=64)
+    voxbridge_max_dialogue_segments: int = Field(default=10, ge=2, le=10)
+    voxbridge_max_dialogue_chars: int = Field(default=5_000, ge=2, le=100_000)
+    voxbridge_max_dialogue_pause_ms: int = Field(default=30_000, ge=0, le=600_000)
+    voxbridge_max_dialogue_duration_seconds: int = Field(default=600, ge=1, le=3_600)
+    voxbridge_max_materialized_audio_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        ge=1_024,
+        le=100 * 1024 * 1024,
+    )
     voxbridge_audio_download_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
     voxbridge_audio_download_max_items: int = Field(default=32, ge=1, le=1_000)
     voxbridge_audio_download_max_bytes: int = Field(
@@ -59,6 +68,10 @@ class Settings(BaseSettings):
         if self.voxbridge_audio_download_max_bytes < self.voxbridge_max_audio_bytes:
             raise ValueError(
                 "VOXBRIDGE_AUDIO_DOWNLOAD_MAX_BYTES must be at least VOXBRIDGE_MAX_AUDIO_BYTES"
+            )
+        if self.voxbridge_max_materialized_audio_bytes > self.voxbridge_max_audio_bytes:
+            raise ValueError(
+                "VOXBRIDGE_MAX_MATERIALIZED_AUDIO_BYTES must not exceed VOXBRIDGE_MAX_AUDIO_BYTES"
             )
         return self
 

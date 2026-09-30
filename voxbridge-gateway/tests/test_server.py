@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import io
 import json
 import re
+import struct
+import wave
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from mcp.client import Client
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
-from mcp.types import AudioContent, ResourceLink, TextContent
+from mcp.types import AudioContent, EmbeddedResource, ResourceLink, TextContent
 from mcp_types import LATEST_PROTOCOL_VERSION
 from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 
 from voxbridge import __version__, server
 from voxbridge.config import Settings
-from voxbridge.models import SpeechResult, Voice
+from voxbridge.models import DialogueSegment, SpeechResult, Voice
 from voxbridge.providers.base import ProviderError
 
 
@@ -23,6 +27,7 @@ class FakeProvider:
     id = "fake"
     display_name = "Fake Voice"
     configured = True
+    default_model = "fake-model"
 
     def __init__(self, result: SpeechResult | None = None) -> None:
         self.result = result or SpeechResult(
@@ -81,6 +86,54 @@ class FailingProvider(FakeProvider):
         raise ProviderError(self.message)
 
 
+def _pcm_wav(
+    samples: list[int],
+    *,
+    channels: int = 1,
+    sample_width: int = 2,
+    frame_rate: int = 1_000,
+) -> bytes:
+    if sample_width != 2:
+        raise AssertionError("test helper only supports 16-bit PCM")
+    frames = struct.pack(f"<{len(samples)}h", *samples)
+    output = io.BytesIO()
+    with wave.open(output, "wb") as destination:
+        destination.setnchannels(channels)
+        destination.setsampwidth(sample_width)
+        destination.setframerate(frame_rate)
+        destination.writeframes(frames)
+    return output.getvalue()
+
+
+def _wav_samples(audio: bytes) -> tuple[wave._wave_params, list[int]]:
+    with wave.open(io.BytesIO(audio), "rb") as source:
+        parameters = source.getparams()
+        frames = source.readframes(source.getnframes())
+    return parameters, list(struct.unpack(f"<{len(frames) // 2}h", frames))
+
+
+class DialogueProvider(FakeProvider):
+    def __init__(self, audio_by_voice: dict[str, bytes]) -> None:
+        super().__init__()
+        self.audio_by_voice = audio_by_voice
+
+    async def generate(self, request) -> SpeechResult:
+        self.generated.append(request)
+        return SpeechResult(
+            audio=self.audio_by_voice[request.voice_id],
+            mime_type="audio/wav",
+            provider=self.id,
+            model=request.model or "fake-model",
+            request_id=f"request-{request.voice_id}",
+        )
+
+
+def test_dialogue_segment_normalizes_and_rejects_voice_ids() -> None:
+    assert DialogueSegment(text="Hello", voice_id="  voice-1  ").voice_id == "voice-1"
+    with pytest.raises(ValueError, match="voice_id cannot be blank"):
+        DialogueSegment(text="Hello", voice_id="   ")
+
+
 @pytest.fixture(autouse=True)
 def clear_audio_artifacts():
     server._audio_artifacts.clear()
@@ -136,6 +189,7 @@ async def test_generate_speech_returns_metadata_and_app_playback_file(
         "file_name": metadata["file_name"],
         "file_mime_type": "audio/wav",
         "file_size_bytes": len(b"fake-audio"),
+        "sha256": hashlib.sha256(b"fake-audio").hexdigest(),
         "resource_uri": metadata["resource_uri"],
         "download_expires_at": metadata["download_expires_at"],
     }
@@ -153,6 +207,7 @@ async def test_generate_speech_returns_metadata_and_app_playback_file(
             "mimeType": "audio/wav",
         }
     }
+    assert output.structured_content == metadata
 
 
 @pytest.mark.parametrize(
@@ -303,6 +358,374 @@ async def test_delivery_selects_playback_file_or_both(
         assert "download_expires_at" not in metadata
 
 
+async def test_generate_dialogue_preserves_voice_order_controls_and_pauses(monkeypatch):
+    provider = DialogueProvider(
+        {
+            "julian": _pcm_wav([101, 102]),
+            "ethan": _pcm_wav([201]),
+            "kyla": _pcm_wav([301, 302]),
+        }
+    )
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    output = await server.generate_dialogue(
+        provider=" FAKE ",
+        model="dialogue-model",
+        language="en-US",
+        delivery="both",
+        segments=[
+            DialogueSegment(
+                text="First",
+                voice_id="julian",
+                instructions="Friendly",
+                speed=1.1,
+                options={"stability": 0.5},
+                pause_after_ms=2,
+            ),
+            DialogueSegment(
+                text="Second",
+                voice_id="ethan",
+                language="en-GB",
+                pause_after_ms=1,
+            ),
+            DialogueSegment(
+                text="Third",
+                voice_id="kyla",
+                # The final pause is deliberately ignored by the dialogue tool.
+                pause_after_ms=9_999,
+            ),
+        ],
+    )
+
+    assert [request.voice_id for request in provider.validated] == ["julian", "ethan", "kyla"]
+    assert provider.generated == provider.validated
+    assert [request.text for request in provider.generated] == ["First", "Second", "Third"]
+    assert all(request.output_format == "wav" for request in provider.generated)
+    assert all(request.model == "dialogue-model" for request in provider.generated)
+    assert [request.language for request in provider.generated] == ["en-US", "en-GB", "en-US"]
+    assert provider.generated[0].instructions == "Friendly"
+    assert provider.generated[0].speed == 1.1
+    assert provider.generated[0].options == {"stability": 0.5}
+
+    metadata = json.loads(output.content[0].text)
+    downloadable = output.content[1]
+    assert isinstance(downloadable, ResourceLink)
+    assert metadata["dialogue"] is True
+    assert metadata["segment_count"] == 3
+    assert metadata["provider_call_count"] == 3
+    assert metadata["voice_ids"] == ["julian", "ethan", "kyla"]
+    assert metadata["total_characters"] == 16
+    assert metadata["pause_total_ms"] == 3
+    assert metadata["segment_request_ids"] == [
+        "request-julian",
+        "request-ethan",
+        "request-kyla",
+    ]
+    assert metadata["source_format"] == {
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "sample_rate_hz": 1_000,
+    }
+    assert metadata["duration_seconds"] == pytest.approx(0.008)
+    assert metadata["delivery"] == "both"
+    assert metadata["mime_type"] == "audio/wav"
+    assert metadata["file_mime_type"] == "audio/wav"
+    assert output.meta is not None
+    assert output.meta["voxbridge/audio"]["mimeType"] == "audio/wav"
+
+    resource = next(iter(await server.mcp.read_resource(downloadable.uri)))
+    assert base64.b64decode(output.meta["voxbridge/audio"]["data"]) == resource.content
+    parameters, samples = _wav_samples(resource.content)
+    assert parameters.nchannels == 1
+    assert parameters.sampwidth == 2
+    assert parameters.framerate == 1_000
+    assert samples == [101, 102, 0, 0, 201, 0, 301, 302]
+
+
+@pytest.mark.parametrize(
+    ("delivery", "content_types", "has_file", "has_app_audio"),
+    [
+        ("playback", ["text", "audio"], False, False),
+        ("file", ["text", "resource_link"], True, False),
+        ("both", ["text", "resource_link"], True, True),
+    ],
+)
+async def test_generate_dialogue_supports_all_delivery_modes(
+    monkeypatch,
+    delivery,
+    content_types,
+    has_file,
+    has_app_audio,
+):
+    provider = DialogueProvider({"one": _pcm_wav([1]), "two": _pcm_wav([2])})
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    output = await server.generate_dialogue(
+        "fake",
+        [
+            DialogueSegment(text="One", voice_id="one", pause_after_ms=0),
+            DialogueSegment(text="Two", voice_id="two", pause_after_ms=0),
+        ],
+        delivery=delivery,
+    )
+
+    metadata = json.loads(output.content[0].text)
+    assert [item.type for item in output.content] == content_types
+    assert metadata["delivery"] == delivery
+    assert metadata["file_resource_included"] is has_file
+    assert (output.meta is not None) is has_app_audio
+    assert server._audio_artifacts.item_count == int(has_file)
+
+
+async def test_generate_dialogue_rejects_limits_and_bad_options_before_provider_calls(
+    monkeypatch,
+):
+    provider = DialogueProvider({"one": _pcm_wav([1]), "two": _pcm_wav([2])})
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    with pytest.raises(ToolError, match="at least two"):
+        await server.generate_dialogue(
+            "fake",
+            [DialogueSegment(text="One", voice_id="one")],
+        )
+
+    monkeypatch.setattr(server.settings, "voxbridge_max_dialogue_segments", 2)
+    with pytest.raises(ToolError, match="2-turn limit"):
+        await server.generate_dialogue(
+            "fake",
+            [
+                DialogueSegment(text="One", voice_id="one"),
+                DialogueSegment(text="Two", voice_id="two"),
+                DialogueSegment(text="Three", voice_id="one"),
+            ],
+        )
+
+    monkeypatch.setattr(server.settings, "voxbridge_max_dialogue_chars", 5)
+    with pytest.raises(ToolError, match="5-character limit"):
+        await server.generate_dialogue(
+            "fake",
+            [
+                DialogueSegment(text="One", voice_id="one"),
+                DialogueSegment(text="Two", voice_id="two"),
+            ],
+        )
+
+    monkeypatch.setattr(server.settings, "voxbridge_max_dialogue_chars", 100)
+    monkeypatch.setattr(server.settings, "voxbridge_max_dialogue_pause_ms", 5)
+    with pytest.raises(ToolError, match="pause.*5"):
+        await server.generate_dialogue(
+            "fake",
+            [
+                DialogueSegment(text="One", voice_id="one", pause_after_ms=6),
+                DialogueSegment(text="Two", voice_id="two", pause_after_ms=10_000),
+            ],
+        )
+
+    original_validate = provider.validate_request
+
+    def reject_bad_segment(request):
+        original_validate(request)
+        if request.options.get("invalid"):
+            raise ProviderError("invalid provider option")
+
+    monkeypatch.setattr(provider, "validate_request", reject_bad_segment)
+    monkeypatch.setattr(server.settings, "voxbridge_max_dialogue_pause_ms", 1_000)
+    with pytest.raises(ToolError, match="Segment 2 is invalid: invalid provider option"):
+        await server.generate_dialogue(
+            "fake",
+            [
+                DialogueSegment(text="One", voice_id="one"),
+                DialogueSegment(text="Two", voice_id="two", options={"invalid": True}),
+            ],
+        )
+
+    assert len(provider.validated) == 2
+    assert provider.generated == []
+
+
+async def test_generate_dialogue_rejects_mismatched_provider_wav_streams(monkeypatch):
+    provider = DialogueProvider(
+        {
+            "one": _pcm_wav([1]),
+            "two": _pcm_wav([2], frame_rate=2_000),
+        }
+    )
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    with pytest.raises(ToolError, match="different WAV channel, sample-width, or sample-rate"):
+        await server.generate_dialogue(
+            "fake",
+            [
+                DialogueSegment(text="One", voice_id="one", pause_after_ms=0),
+                DialogueSegment(text="Two", voice_id="two", pause_after_ms=0),
+            ],
+        )
+
+    assert len(provider.generated) == 2
+    assert server._audio_artifacts.item_count == 0
+
+
+async def test_generate_dialogue_reports_partial_provider_work_without_storing_file(
+    monkeypatch,
+):
+    provider = DialogueProvider({"one": _pcm_wav([1]), "two": _pcm_wav([2])})
+
+    async def fail_second(request):
+        provider.generated.append(request)
+        if request.voice_id == "two":
+            raise ProviderError("second turn failed")
+        return SpeechResult(
+            audio=provider.audio_by_voice[request.voice_id],
+            mime_type="audio/wav",
+            provider=provider.id,
+            model="fake-model",
+            request_id="request-one",
+        )
+
+    monkeypatch.setattr(provider, "generate", fail_second)
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    with pytest.raises(
+        ToolError,
+        match=(
+            r"Segment 2 of 2 failed after 1 provider call\(s\) completed.*"
+            r"Provider charges may already apply; no combined audio file was stored"
+        ),
+    ):
+        await server.generate_dialogue(
+            "fake",
+            [
+                DialogueSegment(text="One", voice_id="one", pause_after_ms=0),
+                DialogueSegment(text="Two", voice_id="two", pause_after_ms=0),
+            ],
+            delivery="file",
+        )
+
+    assert [request.voice_id for request in provider.generated] == ["one", "two"]
+    assert server._audio_artifacts.item_count == 0
+
+
+async def test_generate_dialogue_sanitizes_unexpected_later_provider_failure(monkeypatch):
+    provider = DialogueProvider({"one": _pcm_wav([1]), "two": _pcm_wav([2])})
+
+    async def fail_second_unexpectedly(request):
+        provider.generated.append(request)
+        if request.voice_id == "two":
+            raise RuntimeError("sensitive upstream diagnostic")
+        return SpeechResult(
+            audio=provider.audio_by_voice[request.voice_id],
+            mime_type="audio/wav",
+            provider=provider.id,
+            request_id="request-one",
+        )
+
+    monkeypatch.setattr(provider, "generate", fail_second_unexpectedly)
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    with pytest.raises(ToolError) as captured:
+        await server.generate_dialogue(
+            "fake",
+            [
+                DialogueSegment(text="One", voice_id="one", pause_after_ms=0),
+                DialogueSegment(text="Two", voice_id="two", pause_after_ms=0),
+            ],
+            delivery="file",
+        )
+
+    message = str(captured.value)
+    assert "Segment 2 of 2 failed after 1 provider call(s) completed (2 attempted)" in message
+    assert "provider adapter failed unexpectedly" in message
+    assert "Provider charges may already apply" in message
+    assert "sensitive upstream diagnostic" not in message
+    assert server._audio_artifacts.item_count == 0
+
+
+def test_materialize_audio_file_returns_embedded_bytes_and_metadata():
+    token, artifact = server._audio_artifacts.put(
+        b"materialized-audio",
+        mime_type="audio/mpeg",
+        format_id="mp3",
+        file_name="voxbridge-safe.mp3",
+    )
+    resource_uri = server._resource_uri(artifact.format_id, token, artifact.file_name)
+
+    output = server.materialize_audio_file(resource_uri)
+
+    assert [item.type for item in output.content] == ["text", "resource"]
+    metadata = json.loads(output.content[0].text)
+    assert metadata == {
+        "synthetic_audio": True,
+        "materialized": True,
+        "file_name": "voxbridge-safe.mp3",
+        "file_mime_type": "audio/mpeg",
+        "file_size_bytes": len(b"materialized-audio"),
+        "sha256": hashlib.sha256(b"materialized-audio").hexdigest(),
+        "source_resource_uri": resource_uri,
+    }
+    assert output.structured_content == metadata
+    embedded = output.content[1]
+    assert isinstance(embedded, EmbeddedResource)
+    assert str(embedded.resource.uri) == "file:///voxbridge-safe.mp3"
+    assert embedded.resource.mime_type == "audio/mpeg"
+    assert base64.b64decode(embedded.resource.blob) == b"materialized-audio"
+
+
+async def test_mcp_client_receives_materialized_audio_bytes(monkeypatch):
+    provider = FakeProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    async with Client(server.mcp, mode="auto") as client:
+        generated = await client.call_tool(
+            "generate_speech",
+            {"provider": "fake", "text": "Hello", "delivery": "file"},
+        )
+        resource_uri = json.loads(generated.content[0].text)["resource_uri"]
+        materialized = await client.call_tool(
+            "materialize_audio_file",
+            {"resource_uri": resource_uri},
+        )
+
+    assert generated.is_error is False
+    assert materialized.is_error is False
+    assert [item.type for item in materialized.content] == ["text", "resource"]
+    embedded = materialized.content[1]
+    assert isinstance(embedded, EmbeddedResource)
+    assert embedded.resource.mime_type == "audio/wav"
+    assert base64.b64decode(embedded.resource.blob) == b"fake-audio"
+
+
+@pytest.mark.parametrize(
+    "resource_uri",
+    [
+        "https://example.com/audio.mp3",
+        "voxbridge://wrong/mp3/token/file.mp3",
+        "voxbridge://audio/mp3/token/file.mp3?query=1",
+        "voxbridge://audio/mp3/too",
+    ],
+)
+def test_materialize_audio_file_rejects_non_voxbridge_resources(resource_uri):
+    with pytest.raises(ToolError, match="not a valid VoxBridge audio resource"):
+        server.materialize_audio_file(resource_uri)
+
+
+def test_materialize_audio_file_rejects_expired_and_oversized_resources(monkeypatch):
+    with pytest.raises(ToolError, match="unavailable or has expired"):
+        server.materialize_audio_file("voxbridge://audio/mp3/expired/audio.mp3")
+
+    token, artifact = server._audio_artifacts.put(
+        b"four",
+        mime_type="audio/mpeg",
+        format_id="mp3",
+        file_name="voxbridge-safe.mp3",
+    )
+    monkeypatch.setattr(server.settings, "voxbridge_max_materialized_audio_bytes", 3)
+
+    with pytest.raises(ToolError, match="too large for inline tool handoff"):
+        server.materialize_audio_file(
+            server._resource_uri(artifact.format_id, token, artifact.file_name)
+        )
+
+
 async def test_invalid_delivery_is_rejected_before_generation(monkeypatch):
     provider = FakeProvider()
     monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
@@ -404,19 +827,37 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
         "list_providers",
         "list_voices",
         "generate_speech",
+        "generate_dialogue",
+        "materialize_audio_file",
     }
     by_name = {tool.name: tool for tool in result.tools}
     assert by_name["list_providers"].annotations.read_only_hint is True
     assert by_name["list_voices"].annotations.read_only_hint is True
     assert by_name["generate_speech"].annotations.read_only_hint is False
+    assert by_name["generate_dialogue"].annotations.read_only_hint is False
+    assert by_name["materialize_audio_file"].annotations.read_only_hint is True
+    assert by_name["materialize_audio_file"].annotations.open_world_hint is False
     assert set(by_name["generate_speech"].input_schema["required"]) == {"provider", "text"}
     delivery_schema = by_name["generate_speech"].input_schema["properties"]["delivery"]
     assert delivery_schema["default"] == "both"
     assert set(delivery_schema["enum"]) == {"playback", "file", "both"}
     generate_meta = by_name["generate_speech"].meta
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v5.html"
+    dialogue_schema = by_name["generate_dialogue"].input_schema
+    assert set(dialogue_schema["required"]) == {"provider", "segments"}
+    assert dialogue_schema["properties"]["delivery"]["default"] == "both"
+    assert set(dialogue_schema["properties"]["delivery"]["enum"]) == {
+        "playback",
+        "file",
+        "both",
+    }
+    segment_schema = dialogue_schema["$defs"]["DialogueSegment"]
+    assert set(segment_schema["required"]) == {"text", "voice_id"}
+    assert segment_schema["properties"]["pause_after_ms"]["default"] == 250
+    assert set(by_name["materialize_audio_file"].input_schema["required"]) == {"resource_uri"}
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v6.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
+    assert by_name["generate_dialogue"].meta == generate_meta
     if mode == "legacy":
         assert protocol_version in HANDSHAKE_PROTOCOL_VERSIONS
     else:
@@ -451,6 +892,9 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert document.mime_type == "text/html;profile=mcp-app"
     assert "VoxBridge" in document.text
     assert "downloadFile" in document.text
+    assert "uploadFile" in document.text
+    assert "getFileDownloadUrl" in document.text
+    assert "Save to ChatGPT" in document.text
     assert 'id="play-pause"' in document.text
     assert "AudioContext" in document.text
     assert "decodeAudioData" in document.text
@@ -723,4 +1167,14 @@ def test_download_cache_must_hold_one_maximum_audio_result():
             _env_file=None,
             voxbridge_max_audio_bytes=2_048,
             voxbridge_audio_download_max_bytes=1_024,
+        )
+
+
+def test_materialized_audio_limit_cannot_exceed_generation_limit():
+    with pytest.raises(ValueError, match="VOXBRIDGE_MAX_MATERIALIZED_AUDIO_BYTES"):
+        Settings(
+            _env_file=None,
+            voxbridge_max_audio_bytes=2_048,
+            voxbridge_max_materialized_audio_bytes=4_096,
+            voxbridge_audio_download_max_bytes=4_096,
         )

@@ -30,10 +30,19 @@ type SpeechMetadata = {
   mime_type?: string;
   playback_requested?: boolean;
   provider?: string;
+  sha256?: string;
 };
 
+type OpenAIFileBridge = {
+  uploadFile?: (file: File, options?: { library?: boolean }) => Promise<{ fileId: string }>;
+  getFileDownloadUrl?: (input: { fileId: string }) => Promise<{ downloadUrl: string }>;
+};
+
+const MAX_CHATGPT_UPLOAD_BYTES = 8 * 1024 * 1024;
+const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
 const app = new App(
-  { name: "VoxBridge Audio Delivery", version: "0.2.0" },
+  { name: "VoxBridge Audio Delivery", version: "0.3.0" },
   { availableDisplayModes: ["inline"] },
   { autoResize: true },
 );
@@ -53,19 +62,30 @@ const playbackLabel = requiredElement<HTMLElement>("playback-label");
 const actions = requiredElement<HTMLElement>("actions");
 const downloadButton = requiredElement<HTMLButtonElement>("download");
 const buttonLabel = downloadButton.querySelector<HTMLElement>(".button-label");
+const saveChatGptButton = requiredElement<HTMLButtonElement>("save-chatgpt");
+const saveChatGptLabel = saveChatGptButton.querySelector<HTMLElement>(".button-label");
 const status = requiredElement<HTMLParagraphElement>("status");
 
-if (!buttonLabel) {
-  throw new Error("Missing download button label");
+if (!buttonLabel || !saveChatGptLabel) {
+  throw new Error("Missing file action button label");
 }
 
 const resolvedButtonLabel = buttonLabel;
+const resolvedSaveChatGptLabel = saveChatGptLabel;
 
 let currentResource: ResourceLink | undefined;
 let isConnected = false;
 let hostCanDownload = false;
 let hostCanReadResources = false;
+let hostCanUploadFile = false;
 let isDownloading = false;
+let isSavingToChatGpt = false;
+let savedChatGptFileId: string | undefined;
+let cachedFileResourceUri: string | undefined;
+let cachedFileBase64: string | undefined;
+let cachedFileBytes: ArrayBuffer | undefined;
+let cachedFileMimeType: string | undefined;
+let currentMetadata: SpeechMetadata = {};
 let latestResult: ToolResult | undefined;
 let resultRevision = 0;
 let playbackRevision = 0;
@@ -86,6 +106,10 @@ function requiredElement<T extends HTMLElement>(id: string): T {
   return element as T;
 }
 
+function getOpenAIFileBridge(): OpenAIFileBridge | undefined {
+  return (window as typeof window & { openai?: OpenAIFileBridge }).openai;
+}
+
 function setStatus(message: string, kind: "neutral" | "success" | "error" = "neutral") {
   status.textContent = message;
   status.dataset.kind = kind;
@@ -97,6 +121,35 @@ function setDownloading(value: boolean) {
   downloadButton.disabled = value || !hostCanDownload;
   downloadButton.setAttribute("aria-busy", String(value));
   resolvedButtonLabel.textContent = value ? "Preparing download…" : "Download audio";
+}
+
+function setSavingToChatGpt(value: boolean) {
+  isSavingToChatGpt = value;
+  saveChatGptButton.disabled = value || !hostCanUploadFile || Boolean(savedChatGptFileId);
+  saveChatGptButton.setAttribute("aria-busy", String(value));
+  resolvedSaveChatGptLabel.textContent = value
+    ? "Saving to ChatGPT…"
+    : savedChatGptFileId
+      ? "Saved to ChatGPT"
+      : "Save to ChatGPT";
+}
+
+function resetFileHandoff() {
+  savedChatGptFileId = undefined;
+  cachedFileResourceUri = undefined;
+  cachedFileBase64 = undefined;
+  cachedFileBytes = undefined;
+  cachedFileMimeType = undefined;
+  setSavingToChatGpt(false);
+}
+
+function updateFileActions(resource: ResourceLink | undefined) {
+  const canSaveToChatGpt =
+    hostCanUploadFile &&
+    (resource?.size === undefined || resource.size <= MAX_CHATGPT_UPLOAD_BYTES);
+  downloadButton.hidden = !hostCanDownload;
+  saveChatGptButton.hidden = !canSaveToChatGpt;
+  actions.hidden = !resource || (!hostCanDownload && !canSaveToChatGpt);
 }
 
 function parseMetadata(content: ToolResult["content"]): SpeechMetadata {
@@ -130,8 +183,11 @@ function isBlobResourceContents(content: ResourceReadContent): content is BlobRe
 }
 
 function decodeBase64Audio(data: string, mimeType: string): ArrayBuffer {
-  const base64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-  if (!mimeType.toLowerCase().startsWith("audio/") || data.length === 0 || !base64Pattern.test(data)) {
+  if (
+    !mimeType.toLowerCase().startsWith("audio/") ||
+    data.length === 0 ||
+    !BASE64_PATTERN.test(data)
+  ) {
     throw new Error("Invalid base64 audio content");
   }
 
@@ -145,6 +201,38 @@ function decodeBase64Audio(data: string, mimeType: string): ArrayBuffer {
     bytes[index] = decoded.charCodeAt(index);
   }
   return bytes.buffer;
+}
+
+function base64DecodedByteLength(data: string) {
+  if (data.length === 0 || !BASE64_PATTERN.test(data)) {
+    throw new Error("Invalid base64 audio content");
+  }
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return (data.length / 4) * 3 - padding;
+}
+
+async function verifyFileBytes(
+  bytes: ArrayBuffer,
+  resource: ResourceLink,
+  metadata: SpeechMetadata,
+) {
+  const expectedSize = resource.size ?? metadata.file_size_bytes;
+  if (expectedSize !== undefined && bytes.byteLength !== expectedSize) {
+    throw new Error("Generated audio size does not match its file metadata");
+  }
+  const expectedDigest = metadata.sha256?.toLowerCase();
+  if (!expectedDigest) return;
+  if (!/^[a-f0-9]{64}$/.test(expectedDigest)) {
+    throw new Error("Generated audio has invalid integrity metadata");
+  }
+  if (!globalThis.crypto?.subtle) return;
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes.slice(0));
+  const actualDigest = Array.from(new Uint8Array(digest), (value) =>
+    value.toString(16).padStart(2, "0"),
+  ).join("");
+  if (actualDigest !== expectedDigest) {
+    throw new Error("Generated audio failed its integrity check");
+  }
 }
 
 function parseAppAudioMetadata(result: ToolResult): AppAudioMetadata | undefined {
@@ -166,6 +254,52 @@ function parseResourceAudio(result: ResourceReadResult, resource: ResourceLink) 
     }
   }
   throw new Error("Expected a base64 audio blob resource");
+}
+
+async function loadFileResource(resource: ResourceLink) {
+  if (
+    cachedFileResourceUri === resource.uri &&
+    cachedFileBase64 &&
+    cachedFileMimeType
+  ) {
+    return { data: cachedFileBase64, mimeType: cachedFileMimeType };
+  }
+  if (!hostCanReadResources) {
+    throw new Error("This host cannot read the generated audio resource");
+  }
+  const result = await app.readServerResource({ uri: resource.uri });
+  const audio = parseResourceAudio(result, resource);
+  cachedFileResourceUri = resource.uri;
+  cachedFileBase64 = audio.data;
+  cachedFileMimeType = audio.mimeType;
+  return audio;
+}
+
+async function loadFileBytes(resource: ResourceLink) {
+  if (
+    cachedFileResourceUri === resource.uri &&
+    cachedFileBytes &&
+    cachedFileMimeType
+  ) {
+    return { bytes: cachedFileBytes, mimeType: cachedFileMimeType };
+  }
+  const audio = await loadFileResource(resource);
+  const bytes = decodeBase64Audio(audio.data, audio.mimeType);
+  cachedFileResourceUri = resource.uri;
+  cachedFileBytes = bytes;
+  cachedFileMimeType = audio.mimeType;
+  return { bytes, mimeType: audio.mimeType };
+}
+
+function verifyFileEnvelope(
+  data: string,
+  resource: ResourceLink,
+  metadata: SpeechMetadata,
+) {
+  const expectedSize = resource.size ?? metadata.file_size_bytes;
+  if (expectedSize !== undefined && base64DecodedByteLength(data) !== expectedSize) {
+    throw new Error("Generated audio size does not match its file metadata");
+  }
 }
 
 function stopPlaybackSource() {
@@ -290,8 +424,10 @@ function renderResult(result: ToolResult) {
   latestResult = result;
   resultRevision += 1;
   clearPlayback();
+  resetFileHandoff();
   if (result.isError) {
     currentResource = undefined;
+    currentMetadata = {};
     actions.hidden = true;
     details.hidden = true;
     summary.textContent = "Audio generation did not complete.";
@@ -306,6 +442,7 @@ function renderResult(result: ToolResult) {
   const expiresAt = formatExpiry(metadata.download_expires_at);
 
   currentResource = resource;
+  currentMetadata = metadata;
   details.hidden = false;
   mode.textContent = modeLabel(delivery);
   fileName.textContent = resource?.name ?? metadata.file_name ?? "No file included";
@@ -322,7 +459,7 @@ function renderResult(result: ToolResult) {
     summary.textContent = "Your audio is ready for playback.";
   }
 
-  actions.hidden = !resource || !hostCanDownload;
+  updateFileActions(resource);
   setDownloading(false);
 
   if (delivery === "playback") {
@@ -341,7 +478,13 @@ function renderResult(result: ToolResult) {
       return;
     }
     const appAudio = parseAppAudioMetadata(result);
+    if (appAudio) {
+      cachedFileResourceUri = resource.uri;
+      cachedFileBase64 = appAudio.data;
+      cachedFileMimeType = appAudio.mimeType;
+    }
     if (appAudio && preparePlayback(appAudio)) {
+      cachedFileBytes = playbackBytes;
       setStatus(
         hostCanDownload
           ? "Ready to play or download."
@@ -548,7 +691,30 @@ async function downloadCurrentResource() {
   setDownloading(true);
   setStatus("Waiting for download confirmation…");
   try {
-    const result = await app.downloadFile({ contents: [resource] });
+    let contents: Parameters<App["downloadFile"]>[0]["contents"] = [resource];
+    let loadedFile: Awaited<ReturnType<typeof loadFileResource>> | undefined;
+    try {
+      loadedFile = await loadFileResource(resource);
+    } catch {
+      // A ResourceLink remains a portable fallback when inline materialization
+      // is unavailable; the host fetches it through the originating MCP server.
+    }
+    if (loadedFile) {
+      const { data, mimeType } = loadedFile;
+      verifyFileEnvelope(data, resource, currentMetadata);
+      contents = [
+        {
+          type: "resource",
+          resource: {
+            uri: `file:///${encodeURIComponent(resource.name)}`,
+            mimeType,
+            blob: data,
+          },
+        },
+      ];
+    }
+    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
+    const result = await app.downloadFile({ contents });
     if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
     if (result.isError) {
       setStatus("Download cancelled or declined by the host.");
@@ -565,8 +731,68 @@ async function downloadCurrentResource() {
   }
 }
 
+async function saveCurrentFileToChatGpt() {
+  if (isSavingToChatGpt || savedChatGptFileId || !currentResource) return;
+  const bridge = getOpenAIFileBridge();
+  if (!bridge?.uploadFile) {
+    setStatus("This ChatGPT host does not expose its file library.", "error");
+    return;
+  }
+
+  const resource = currentResource;
+  const revision = resultRevision;
+  setSavingToChatGpt(true);
+  setStatus("Saving the generated audio to your ChatGPT file library…");
+  try {
+    const { bytes, mimeType } = await loadFileBytes(resource);
+    await verifyFileBytes(bytes, resource, currentMetadata);
+    if (bytes.byteLength > MAX_CHATGPT_UPLOAD_BYTES) {
+      throw new Error("Audio is too large for ChatGPT file-library upload");
+    }
+    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
+    const file = new File([bytes], resource.name, { type: mimeType });
+    const uploaded = await bridge.uploadFile(file, { library: true });
+    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
+    if (!uploaded.fileId) {
+      throw new Error("ChatGPT did not return a file id");
+    }
+    let confirmedAvailable = false;
+    if (bridge.getFileDownloadUrl) {
+      try {
+        const downloadable = await bridge.getFileDownloadUrl({ fileId: uploaded.fileId });
+        confirmedAvailable = Boolean(downloadable.downloadUrl);
+      } catch {
+        // The upload itself succeeded. URL confirmation is an optional second
+        // check and must not misreport a saved file as an upload failure.
+      }
+    }
+    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
+    savedChatGptFileId = uploaded.fileId;
+    setStatus(
+      confirmedAvailable
+        ? "Saved to ChatGPT and confirmed available. Select this audio from your file library for a later tool or message."
+        : "Saved to ChatGPT. Select this audio from your file library for a later tool or message.",
+      "success",
+    );
+  } catch {
+    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
+    setStatus(
+      "ChatGPT could not save this audio to its file library. Download is still available.",
+      "error",
+    );
+  } finally {
+    if (revision === resultRevision && currentResource?.uri === resource.uri) {
+      setSavingToChatGpt(false);
+    }
+  }
+}
+
 downloadButton.addEventListener("click", () => {
   void downloadCurrentResource();
+});
+
+saveChatGptButton.addEventListener("click", () => {
+  void saveCurrentFileToChatGpt();
 });
 
 playPauseButton.addEventListener("click", () => {
@@ -581,6 +807,8 @@ app.addEventListener("toolinput", (params) => {
   resultRevision += 1;
   latestResult = undefined;
   currentResource = undefined;
+  currentMetadata = {};
+  resetFileHandoff();
   clearPlayback();
   setDownloading(false);
   actions.hidden = true;
@@ -594,6 +822,8 @@ app.addEventListener("toolcancelled", (params) => {
   resultRevision += 1;
   latestResult = undefined;
   currentResource = undefined;
+  currentMetadata = {};
+  resetFileHandoff();
   clearPlayback();
   setDownloading(false);
   actions.hidden = true;
@@ -604,6 +834,8 @@ app.addEventListener("toolcancelled", (params) => {
 app.onteardown = () => {
   resultRevision += 1;
   currentResource = undefined;
+  currentMetadata = {};
+  resetFileHandoff();
   clearPlayback();
   return {};
 };
@@ -611,6 +843,8 @@ app.onteardown = () => {
 window.addEventListener("pagehide", () => {
   resultRevision += 1;
   currentResource = undefined;
+  currentMetadata = {};
+  resetFileHandoff();
   clearPlayback();
 });
 
@@ -620,7 +854,11 @@ try {
   const hostCapabilities = app.getHostCapabilities();
   hostCanDownload = hostCapabilities?.downloadFile !== undefined;
   hostCanReadResources = hostCapabilities?.serverResources !== undefined;
+  hostCanUploadFile = typeof getOpenAIFileBridge()?.uploadFile === "function";
   downloadButton.disabled = !hostCanDownload;
+  saveChatGptButton.disabled = !hostCanUploadFile;
+  downloadButton.hidden = !hostCanDownload;
+  saveChatGptButton.hidden = !hostCanUploadFile;
   if (latestResult) {
     renderResult(latestResult);
   } else {

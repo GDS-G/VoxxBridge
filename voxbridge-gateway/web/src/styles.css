@@ -141,6 +141,10 @@ dd {
   margin-top: 14px;
 }
 
+.actions > button + button {
+  margin-top: 8px;
+}
+
 button {
   display: inline-flex;
   width: 100%;

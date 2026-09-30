@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from importlib.resources import files
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 
 import uvicorn
@@ -14,19 +16,29 @@ from mcp.server import MCPServer
 from mcp.server.apps import Apps, ResourceCsp
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import AudioContent, CallToolResult, ResourceLink, TextContent, ToolAnnotations
+from mcp.types import (
+    AudioContent,
+    BlobResourceContents,
+    CallToolResult,
+    EmbeddedResource,
+    ResourceLink,
+    TextContent,
+    ToolAnnotations,
+)
+from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from voxbridge import __version__
-from voxbridge.audio_store import AudioArtifactStore
+from voxbridge.audio_composer import AudioCompositionError, PcmWavComposer, WavSegment
+from voxbridge.audio_store import AudioArtifact, AudioArtifactStore
 from voxbridge.config import settings
-from voxbridge.models import SpeechRequest
+from voxbridge.models import DialogueSegment, SpeechRequest, SpeechResult
 from voxbridge.providers.base import ProviderError
 from voxbridge.registry import REGISTRY, close_registry
 
-_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v5.html"
+_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v6.html"
 _AUDIO_DELIVERY_UI_HTML = (
     files("voxbridge").joinpath("ui").joinpath("audio-delivery-v1.html").read_text(encoding="utf-8")
 )
@@ -57,7 +69,9 @@ mcp = MCPServer(
     instructions=(
         "Provider-neutral text-to-speech. Never switch providers silently. "
         "Generated audio is synthetic. Use delivery='playback', 'file', or 'both' "
-        "to choose the returned representation."
+        "to choose the returned representation. Use generate_dialogue for an ordered, "
+        "single-provider, multi-voice WAV file. Use materialize_audio_file only when a "
+        "compatible downstream tool needs the generated file bytes."
     ),
     extensions=[_apps],
     lifespan=_lifespan,
@@ -117,6 +131,59 @@ def _read_audio_artifact(
     if artifact is None or artifact.file_name != file_name or artifact.format_id != expected_format:
         raise ResourceError("Audio file is unavailable or has expired")
     return artifact.data
+
+
+def _artifact_from_resource_uri(resource_uri: str) -> AudioArtifact:
+    parsed = urlparse(resource_uri)
+    parts = parsed.path.lstrip("/").split("/")
+    if (
+        parsed.scheme != "voxbridge"
+        or parsed.netloc != "audio"
+        or parsed.query
+        or parsed.fragment
+        or len(parts) != 3
+        or not all(parts)
+    ):
+        raise ToolError("resource_uri is not a valid VoxBridge audio resource")
+    format_id, token, file_name = parts
+    artifact = _audio_artifacts.get(token)
+    if artifact is None or artifact.file_name != file_name or artifact.format_id != format_id:
+        raise ToolError("Audio file is unavailable or has expired")
+    return artifact
+
+
+def _parse_options_json(options_json: str | None, *, field_name: str = "options_json"):
+    if not options_json:
+        return {}
+    try:
+        parsed = json.loads(
+            options_json,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ToolError(f"{field_name} must contain valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ToolError(f"{field_name} must decode to a JSON object")
+    return parsed
+
+
+def _validate_delivery(delivery: str) -> None:
+    if delivery not in {"playback", "file", "both"}:
+        raise ToolError("delivery must be 'playback', 'file', or 'both'")
+
+
+def _dialogue_failure_message(
+    segment_number: int,
+    segment_count: int,
+    completed_calls: int,
+    attempted_calls: int,
+    reason: str,
+) -> str:
+    return (
+        f"Segment {segment_number} of {segment_count} failed after "
+        f"{completed_calls} provider call(s) completed ({attempted_calls} attempted): {reason}. "
+        "Provider charges may already apply; no combined audio file was stored."
+    )
 
 
 @mcp.resource(
@@ -197,6 +264,106 @@ def generated_m4a(token: str, file_name: str) -> bytes:
 )
 def generated_webm(token: str, file_name: str) -> bytes:
     return _read_audio_artifact(token, file_name, expected_format="webm")
+
+
+def _build_delivery_result(
+    result: SpeechResult,
+    delivery: Literal["playback", "file", "both"],
+    *,
+    extra_metadata: dict[str, Any] | None = None,
+) -> CallToolResult:
+    _validate_delivery(delivery)
+    if len(result.audio) > settings.voxbridge_max_audio_bytes:
+        raise ToolError(
+            f"Generated audio exceeds the {settings.voxbridge_max_audio_bytes:,}-byte limit"
+        )
+    if not result.mime_type.startswith("audio/"):
+        raise ToolError("Provider returned an invalid audio media type")
+
+    include_playback = delivery in {"playback", "both"}
+    include_file = delivery in {"file", "both"}
+    metadata = {
+        **result.metadata,
+        **(extra_metadata or {}),
+        "synthetic_audio": True,
+        "provider": result.provider,
+        "model": result.model,
+        "mime_type": result.mime_type,
+        "request_id": result.request_id,
+        "delivery": delivery,
+        "playback_requested": include_playback,
+        "inline_audio_included": delivery == "playback",
+        "app_resource_playback": delivery == "both",
+        "file_resource_included": include_file,
+        "file_size_bytes": len(result.audio),
+        "sha256": hashlib.sha256(result.audio).hexdigest(),
+    }
+    content: list[TextContent | AudioContent | ResourceLink] = []
+    audio_content: AudioContent | None = None
+    # ChatGPT can suppress a ResourceLink's host download action when the same
+    # result also contains inline audio. In `both` mode the MCP App receives
+    # playback bytes through hidden result metadata, leaving public content in
+    # the proven downloadable-file shape.
+    if delivery == "playback":
+        audio_content = AudioContent(
+            type="audio",
+            data=base64.b64encode(result.audio).decode("ascii"),
+            mimeType=result.mime_type,
+        )
+
+    file_resource: ResourceLink | None = None
+    if include_file:
+        format_id, extension, file_mime_type = _audio_file_details(result.mime_type)
+        file_name = _download_filename(extension)
+        try:
+            token, artifact = _audio_artifacts.put(
+                result.audio,
+                mime_type=file_mime_type,
+                format_id=format_id,
+                file_name=file_name,
+            )
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+        resource_uri = _resource_uri(format_id, token, file_name)
+        expires_at = (
+            datetime.fromtimestamp(artifact.expires_at, tz=UTC).isoformat().replace("+00:00", "Z")
+        )
+        metadata.update(
+            {
+                "file_name": file_name,
+                "file_mime_type": file_mime_type,
+                "resource_uri": resource_uri,
+                "download_expires_at": expires_at,
+            }
+        )
+        file_resource = ResourceLink(
+            type="resource_link",
+            uri=resource_uri,
+            name=file_name,
+            title=f"Download {file_name}",
+            description="Short-lived downloadable synthetic audio generated by VoxBridge.",
+            mimeType=file_mime_type,
+            size=len(result.audio),
+        )
+
+    content.append(TextContent(type="text", text=json.dumps(metadata, ensure_ascii=False)))
+    if audio_content is not None:
+        content.append(audio_content)
+    if file_resource is not None:
+        content.append(file_resource)
+    result_meta: dict[str, Any] | None = None
+    if delivery == "both":
+        # MCP tool-result metadata is delivered to the bound App but hidden from
+        # the model. Supplying the same generated bytes here gives the App a
+        # reliable playback path while the ResourceLink remains available for
+        # the host's native file materialization and Download action.
+        result_meta = {
+            "voxbridge/audio": {
+                "data": base64.b64encode(result.audio).decode("ascii"),
+                "mimeType": metadata["file_mime_type"],
+            }
+        }
+    return CallToolResult(content=content, structuredContent=metadata, meta=result_meta)
 
 
 def _provider(provider: str):
@@ -293,8 +460,7 @@ async def generate_speech(
     """
     if not text.strip():
         raise ToolError("text cannot be empty")
-    if delivery not in {"playback", "file", "both"}:
-        raise ToolError("delivery must be 'playback', 'file', or 'both'")
+    _validate_delivery(delivery)
     normalized_output_format = output_format.strip().lower()
     if normalized_output_format == "pcm":
         raise ToolError(
@@ -306,18 +472,7 @@ async def generate_speech(
             f"text exceeds the {settings.voxbridge_max_text_chars:,}-character "
             "developer-alpha limit"
         )
-    options: dict[str, Any] = {}
-    if options_json:
-        try:
-            parsed = json.loads(
-                options_json,
-                parse_constant=_reject_nonstandard_json_constant,
-            )
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise ToolError("options_json must contain valid JSON") from exc
-        if not isinstance(parsed, dict):
-            raise ToolError("options_json must decode to a JSON object")
-        options = parsed
+    options = _parse_options_json(options_json)
     p = _provider(provider)
     request = SpeechRequest(
         text=text,
@@ -336,94 +491,255 @@ async def generate_speech(
         p.validate_audio(result.audio)
     except ProviderError as exc:
         raise ToolError(str(exc)) from exc
-    if len(result.audio) > settings.voxbridge_max_audio_bytes:
+    return _build_delivery_result(result, delivery)
+
+
+@mcp.tool(
+    title="Generate multi-voice dialogue",
+    meta={
+        "ui": {"resourceUri": _AUDIO_DELIVERY_UI_URI},
+        "openai/outputTemplate": _AUDIO_DELIVERY_UI_URI,
+    },
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+async def generate_dialogue(
+    provider: str,
+    segments: Annotated[list[DialogueSegment], Field(min_length=2, max_length=10)],
+    model: str | None = None,
+    language: str | None = None,
+    delivery: Literal["playback", "file", "both"] = "both",
+) -> CallToolResult:
+    """Generate ordered voice turns and join them into one PCM WAV file.
+
+    Each segment selects its own `voice_id`, text, performance controls, and
+    pause. All segments use one provider and optional global model. VoxBridge
+    performs schema and shared provider-capability validation before generation,
+    then synthesizes sequentially and joins compatible PCM audio without a lossy
+    transcode. A provider can still reject a later segment after earlier calls
+    completed. The final pause is ignored. Delivery supports playback, file, or
+    both, just like generate_speech.
+    """
+
+    _validate_delivery(delivery)
+    if len(segments) < 2:
+        raise ToolError("segments must include at least two voice turns")
+    if len(segments) > settings.voxbridge_max_dialogue_segments:
         raise ToolError(
-            f"Generated audio exceeds the {settings.voxbridge_max_audio_bytes:,}-byte limit"
+            f"segments exceeds the {settings.voxbridge_max_dialogue_segments}-turn limit"
         )
-    if not result.mime_type.startswith("audio/"):
-        raise ToolError("Provider returned an invalid audio media type")
-    include_playback = delivery in {"playback", "both"}
-    include_file = delivery in {"file", "both"}
-    metadata = {
-        **result.metadata,
-        "synthetic_audio": True,
-        "provider": result.provider,
-        "model": result.model,
-        "mime_type": result.mime_type,
-        "request_id": result.request_id,
-        "delivery": delivery,
-        "playback_requested": include_playback,
-        "inline_audio_included": delivery == "playback",
-        "app_resource_playback": delivery == "both",
-        "file_resource_included": include_file,
-        "file_size_bytes": len(result.audio),
-    }
-    content: list[TextContent | AudioContent | ResourceLink] = []
-    audio_content: AudioContent | None = None
-    # ChatGPT can suppress a ResourceLink's host download action when the same
-    # result also contains inline audio. In `both` mode the MCP App receives
-    # playback bytes through hidden result metadata, leaving public content in
-    # the proven downloadable-file shape.
-    if delivery == "playback":
-        audio_content = AudioContent(
-            type="audio",
-            data=base64.b64encode(result.audio).decode("ascii"),
-            mimeType=result.mime_type,
+    total_chars = sum(len(segment.text) for segment in segments)
+    if total_chars > settings.voxbridge_max_dialogue_chars:
+        raise ToolError(
+            f"dialogue exceeds the {settings.voxbridge_max_dialogue_chars:,}-character limit"
+        )
+    pause_total_ms = sum(segment.pause_after_ms for segment in segments[:-1])
+    if pause_total_ms > settings.voxbridge_max_dialogue_pause_ms:
+        raise ToolError(
+            "dialogue pauses exceed the "
+            f"{settings.voxbridge_max_dialogue_pause_ms:,}-millisecond limit"
         )
 
-    file_resource: ResourceLink | None = None
-    if include_file:
-        format_id, extension, file_mime_type = _audio_file_details(result.mime_type)
-        file_name = _download_filename(extension)
+    p = _provider(provider)
+    requests: list[SpeechRequest] = []
+    for index, segment in enumerate(segments, start=1):
+        request = SpeechRequest(
+            text=segment.text,
+            voice_id=segment.voice_id,
+            model=model,
+            output_format="wav",
+            instructions=segment.instructions,
+            speed=segment.speed,
+            language=segment.language or language,
+            options=segment.options,
+        )
         try:
-            token, artifact = _audio_artifacts.put(
-                result.audio,
-                mime_type=file_mime_type,
-                format_id=format_id,
-                file_name=file_name,
-            )
-        except ValueError as exc:
-            raise ToolError(str(exc)) from exc
-        resource_uri = _resource_uri(format_id, token, file_name)
-        expires_at = (
-            datetime.fromtimestamp(artifact.expires_at, tz=UTC).isoformat().replace("+00:00", "Z")
-        )
-        metadata.update(
-            {
-                "file_name": file_name,
-                "file_mime_type": file_mime_type,
-                "resource_uri": resource_uri,
-                "download_expires_at": expires_at,
-            }
-        )
-        file_resource = ResourceLink(
-            type="resource_link",
-            uri=resource_uri,
-            name=file_name,
-            title=f"Download {file_name}",
-            description="Short-lived downloadable synthetic audio generated by VoxBridge.",
-            mimeType=file_mime_type,
-            size=len(result.audio),
-        )
+            p.validate_request(request)
+        except ProviderError as exc:
+            raise ToolError(f"Segment {index} is invalid: {exc}") from exc
+        requests.append(request)
 
-    content.append(TextContent(type="text", text=json.dumps(metadata, ensure_ascii=False)))
-    if audio_content is not None:
-        content.append(audio_content)
-    if file_resource is not None:
-        content.append(file_resource)
-    result_meta: dict[str, Any] | None = None
-    if delivery == "both":
-        # MCP tool-result metadata is delivered to the bound App but hidden from
-        # the model. Supplying the same generated bytes here gives the App a
-        # reliable playback path while the ResourceLink remains available for
-        # the host's native file materialization and Download action.
-        result_meta = {
-            "voxbridge/audio": {
-                "data": base64.b64encode(result.audio).decode("ascii"),
-                "mimeType": metadata["file_mime_type"],
-            }
-        }
-    return CallToolResult(content=content, meta=result_meta)
+    composer = PcmWavComposer(
+        max_pcm_bytes=max(1, settings.voxbridge_max_audio_bytes - 44),
+        max_duration_seconds=settings.voxbridge_max_dialogue_duration_seconds,
+    )
+    request_ids: list[str | None] = []
+    provider_call_count = 0
+    provider_call_attempts = 0
+    try:
+        async with _generation_slots:
+            for index, (request, segment) in enumerate(
+                zip(requests, segments, strict=True),
+                start=1,
+            ):
+                provider_call_attempts += 1
+                try:
+                    segment_result = await p.generate(request)
+                    provider_call_count += 1
+                    p.validate_audio(segment_result.audio)
+                except ProviderError as exc:
+                    raise ToolError(
+                        _dialogue_failure_message(
+                            index,
+                            len(segments),
+                            provider_call_count,
+                            provider_call_attempts,
+                            str(exc),
+                        )
+                    ) from exc
+                except Exception as exc:
+                    raise ToolError(
+                        _dialogue_failure_message(
+                            index,
+                            len(segments),
+                            provider_call_count,
+                            provider_call_attempts,
+                            "the provider adapter failed unexpectedly",
+                        )
+                    ) from exc
+                if segment_result.mime_type.partition(";")[0].strip().lower() not in {
+                    "audio/wav",
+                    "audio/x-wav",
+                    "audio/vnd.wave",
+                }:
+                    raise ToolError(
+                        _dialogue_failure_message(
+                            index,
+                            len(segments),
+                            provider_call_count,
+                            provider_call_attempts,
+                            "the provider did not return PCM WAV audio",
+                        )
+                    )
+                try:
+                    composer.append(
+                        WavSegment(
+                            segment_result.audio,
+                            segment.pause_after_ms if index < len(segments) else 0,
+                        ),
+                        segment_number=index,
+                    )
+                except AudioCompositionError as exc:
+                    raise ToolError(
+                        _dialogue_failure_message(
+                            index,
+                            len(segments),
+                            provider_call_count,
+                            provider_call_attempts,
+                            str(exc),
+                        )
+                    ) from exc
+                except Exception as exc:
+                    raise ToolError(
+                        _dialogue_failure_message(
+                            index,
+                            len(segments),
+                            provider_call_count,
+                            provider_call_attempts,
+                            "WAV assembly failed unexpectedly",
+                        )
+                    ) from exc
+                request_ids.append(segment_result.request_id)
+        composed_audio = composer.finish()
+    except BaseException:
+        composer.close()
+        raise
+
+    parameters = composer.parameters
+    assert parameters is not None
+    channels, sample_width, frame_rate = parameters
+
+    composed = SpeechResult(
+        audio=composed_audio,
+        mime_type="audio/wav",
+        provider=p.id,
+        model=model or p.default_model,
+        metadata={
+            "dialogue": True,
+            "segment_count": len(segments),
+            "voice_ids": [segment.voice_id for segment in segments],
+            "total_characters": total_chars,
+            "pause_total_ms": pause_total_ms,
+            "provider_call_count": provider_call_count,
+            "duration_seconds": composer.duration_seconds,
+            "source_format": {
+                "channels": channels,
+                "sample_width_bytes": sample_width,
+                "sample_rate_hz": frame_rate,
+            },
+            "segment_request_ids": request_ids,
+        },
+    )
+    try:
+        return _build_delivery_result(composed, delivery)
+    except ToolError as exc:
+        raise ToolError(
+            "Dialogue generation completed, but final delivery failed after "
+            f"{provider_call_count} provider calls. Provider charges may already apply; "
+            f"no combined audio file was stored. {exc}"
+        ) from exc
+    except Exception as exc:
+        raise ToolError(
+            "Dialogue generation completed, but final delivery failed after "
+            f"{provider_call_count} provider calls. Provider charges may already apply; "
+            "no combined audio file was stored."
+        ) from exc
+
+
+@mcp.tool(
+    title="Read generated audio as an embedded resource",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def materialize_audio_file(resource_uri: str) -> CallToolResult:
+    """Return a generated audio resource as an embedded binary file.
+
+    Call this with `resource_uri` from generate_speech or generate_dialogue only
+    when an MCP client or compatible downstream tool explicitly accepts embedded
+    resources. ChatGPT does not guarantee that an EmbeddedResource becomes a
+    registered file attachment. The ordinary ResourceLink remains the efficient
+    download path; this bounded, opt-in result avoids embedding every audio file.
+    """
+
+    artifact = _artifact_from_resource_uri(resource_uri)
+    if len(artifact.data) > settings.voxbridge_max_materialized_audio_bytes:
+        raise ToolError(
+            "Audio file is too large for inline tool handoff; use the Download or "
+            "Save to ChatGPT action instead"
+        )
+    file_uri = f"file:///{quote(artifact.file_name, safe='')}"
+    metadata = {
+        "synthetic_audio": True,
+        "materialized": True,
+        "file_name": artifact.file_name,
+        "file_mime_type": artifact.mime_type,
+        "file_size_bytes": len(artifact.data),
+        "sha256": hashlib.sha256(artifact.data).hexdigest(),
+        "source_resource_uri": resource_uri,
+    }
+    embedded = EmbeddedResource(
+        type="resource",
+        resource=BlobResourceContents(
+            uri=file_uri,
+            mimeType=artifact.mime_type,
+            blob=base64.b64encode(artifact.data).decode("ascii"),
+        ),
+    )
+    return CallToolResult(
+        content=[
+            TextContent(type="text", text=json.dumps(metadata, ensure_ascii=False)),
+            embedded,
+        ],
+        structuredContent=metadata,
+    )
 
 
 async def _health(_: Request) -> JSONResponse:
