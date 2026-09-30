@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -60,3 +60,17 @@ class DialogueSegment(BaseModel):
         if not normalized:
             raise ValueError("voice_id cannot be blank")
         return normalized
+
+
+class MaterializedAudioMetadata(BaseModel):
+    """Structured metadata for an exact generated-audio handoff."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    synthetic_audio: Literal[True]
+    materialized: Literal[True]
+    file_name: str
+    file_mime_type: str
+    file_size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_resource_uri: str

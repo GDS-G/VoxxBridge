@@ -45,7 +45,23 @@ async def check(url: str) -> None:
             materialize_properties
         ):
             raise RuntimeError("materialize_audio_file schema is unavailable")
-        ui_uri = "ui://voxbridge/audio-delivery-v10.html"
+        materialize_output_schema = materialize.output_schema or {}
+        if not {
+            "synthetic_audio",
+            "materialized",
+            "file_name",
+            "file_mime_type",
+            "file_size_bytes",
+            "sha256",
+            "source_resource_uri",
+        }.issubset(materialize_output_schema.get("properties", {})):
+            raise RuntimeError("materialize_audio_file output schema is unavailable")
+        materialize_meta = materialize.meta or {}
+        if materialize_meta.get("ui", {}).get("visibility") != ["model", "app"]:
+            raise RuntimeError("materialize_audio_file is not visible to the MCP App")
+        if materialize_meta.get("openai/widgetAccessible") is not True:
+            raise RuntimeError("materialize_audio_file is not accessible to the ChatGPT widget")
+        ui_uri = "ui://voxbridge/audio-delivery-v11.html"
         if generate.meta is None or generate.meta.get("ui", {}).get("resourceUri") != ui_uri:
             raise RuntimeError("generate_speech MCP App binding is unavailable")
         resources = await client.list_resources(cache_mode="reload")
@@ -58,8 +74,9 @@ async def check(url: str) -> None:
         if (
             not ui_document.contents
             or "downloadFile" not in ui_document.contents[0].text
-            or "uploadFile" not in ui_document.contents[0].text
-            or "getFileDownloadUrl" not in ui_document.contents[0].text
+            or "materialize_audio_file" not in ui_document.contents[0].text
+            or "callServerTool" not in ui_document.contents[0].text
+            or "Add file to ChatGPT" not in ui_document.contents[0].text
         ):
             raise RuntimeError("VoxBridge audio delivery app is invalid")
         templates = await client.list_resource_templates(cache_mode="reload")

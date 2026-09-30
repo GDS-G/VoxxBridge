@@ -16,7 +16,7 @@
     ]
   },
   "name": "voxbridge",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Generate single- or multi-voice AI speech for playback, file download, or both through one provider-neutral ChatGPT workflow.",
   "author": {
     "name": "VoxBridge"

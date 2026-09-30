@@ -195,6 +195,7 @@ async def test_generate_speech_returns_metadata_and_app_playback_file(
         "sha256": hashlib.sha256(b"fake-audio").hexdigest(),
         "resource_uri": metadata["resource_uri"],
         "materialize_resource_uri": metadata["materialize_resource_uri"],
+        "materialize_max_bytes": server.settings.voxbridge_max_materialized_audio_bytes,
         "download_expires_at": metadata["download_expires_at"],
     }
     assert re.fullmatch(r"voxbridge-[0-9a-f]{32}\.wav", metadata["file_name"])
@@ -397,10 +398,12 @@ async def test_download_metadata_cannot_be_overridden_by_provider(monkeypatch):
                 "file_name": "../../provider-name.exe",
                 "file_size_bytes": -1,
                 "file_resource_included": False,
+                "materialize_max_bytes": -1,
             },
         )
     )
     monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+    monkeypatch.setattr(server.settings, "voxbridge_max_materialized_audio_bytes", 12_345)
 
     output = await server.generate_speech("fake", "private script text")
     metadata = json.loads(output.content[0].text)
@@ -408,6 +411,7 @@ async def test_download_metadata_cannot_be_overridden_by_provider(monkeypatch):
     assert re.fullmatch(r"voxbridge-[0-9a-f]{32}\.mp3", metadata["file_name"])
     assert metadata["file_size_bytes"] == len(b"safe-audio")
     assert metadata["file_resource_included"] is True
+    assert metadata["materialize_max_bytes"] == 12_345
     assert "private" not in metadata["file_name"]
     assert output.content[1].uri == metadata["resource_uri"]
 
@@ -458,11 +462,15 @@ async def test_delivery_selects_playback_file_or_both(
         assert metadata["file_name"]
         assert metadata["resource_uri"]
         assert metadata["materialize_resource_uri"]
+        assert metadata["materialize_max_bytes"] == (
+            server.settings.voxbridge_max_materialized_audio_bytes
+        )
         assert metadata["download_expires_at"]
     else:
         assert "file_name" not in metadata
         assert "resource_uri" not in metadata
         assert "materialize_resource_uri" not in metadata
+        assert "materialize_max_bytes" not in metadata
         assert "download_expires_at" not in metadata
 
 
@@ -942,7 +950,10 @@ def test_materialize_audio_file_rejects_expired_and_oversized_resources(monkeypa
     )
     monkeypatch.setattr(server.settings, "voxbridge_max_materialized_audio_bytes", 3)
 
-    with pytest.raises(ToolError, match="too large for inline tool handoff"):
+    with pytest.raises(
+        ToolError,
+        match="too large for inline tool handoff; use Download.*or generate a shorter file",
+    ):
         server.materialize_audio_file(
             server._resource_uri(artifact.format_id, token, artifact.file_name)
         )
@@ -1087,10 +1098,30 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     ]
     assert "exact" in materialize_file_name_schema["description"]
     assert "host" in materialize_file_name_schema["description"]
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v10.html"
+    materialize_output_schema = by_name["materialize_audio_file"].output_schema
+    assert materialize_output_schema is not None
+    assert set(materialize_output_schema["required"]) == {
+        "synthetic_audio",
+        "materialized",
+        "file_name",
+        "file_mime_type",
+        "file_size_bytes",
+        "sha256",
+        "source_resource_uri",
+    }
+    assert materialize_output_schema["properties"]["synthetic_audio"]["const"] is True
+    assert materialize_output_schema["properties"]["materialized"]["const"] is True
+    assert materialize_output_schema["properties"]["file_size_bytes"]["minimum"] == 1
+    assert materialize_output_schema["properties"]["sha256"]["pattern"] == "^[a-f0-9]{64}$"
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v11.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     assert by_name["generate_dialogue"].meta == generate_meta
+    materialize_meta = by_name["materialize_audio_file"].meta
+    assert materialize_meta["ui"]["visibility"] == ["model", "app"]
+    assert materialize_meta["openai/widgetAccessible"] is True
+    assert materialize_meta["openai/toolInvocation/invoking"] == ("Adding audio file to ChatGPT…")
+    assert materialize_meta["openai/toolInvocation/invoked"] == ("Audio file added to ChatGPT")
     if mode == "legacy":
         assert protocol_version in HANDSHAKE_PROTOCOL_VERSIONS
     else:
@@ -1125,19 +1156,16 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert document.mime_type == "text/html;profile=mcp-app"
     assert "VoxBridge" in document.text
     assert "downloadFile" in document.text
-    assert "uploadFile" in document.text
-    assert "selectFiles" in document.text
-    assert "getFileDownloadUrl" in document.text
-    assert "Save to ChatGPT" in document.text
-    assert "Upload to ChatGPT" in document.text
-    assert "Prepare for ChatGPT" in document.text
-    assert "Choose Save to ChatGPT again" in document.text
-    assert "Choose Upload to ChatGPT" in document.text
-    assert "VB-HANDOFF-READ" in document.text
-    assert "VB-HANDOFF-INTEGRITY" in document.text
-    assert "VB-HANDOFF-UPLOAD" in document.text
-    assert "VB-HANDOFF-RESPONSE" in document.text
-    assert "reusable ChatGPT library save did not complete" in document.text
+    assert "callServerTool" in document.text
+    assert "serverTools" in document.text
+    assert "materialize_audio_file" in document.text
+    assert "Add file to ChatGPT" in document.text
+    assert "Adding file to ChatGPT" in document.text
+    assert "VB-HANDOFF-MATERIALIZE" in document.text
+    assert "uploadFile" not in document.text
+    assert "Prepare for ChatGPT" not in document.text
+    assert "Save to ChatGPT" not in document.text
+    assert "Upload to ChatGPT" not in document.text
     assert "toolResponseMetadata" in document.text
     assert "button[hidden]" in document.text
     assert 'id="play-pause"' in document.text

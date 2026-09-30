@@ -27,44 +27,24 @@ type SpeechMetadata = {
   file_name?: string;
   file_size_bytes?: number;
   inline_audio_included?: boolean;
+  materialize_max_bytes?: number;
   mime_type?: string;
   playback_requested?: boolean;
   provider?: string;
   sha256?: string;
 };
 
-type OpenAIFileBridge = {
-  uploadFile?: (
-    file: File,
-    options?: { library?: boolean },
-  ) => Promise<string | { fileId?: string; file_id?: string }>;
-  selectFiles?: () => Promise<unknown[]>;
-  getFileDownloadUrl?: (
-    input: { fileId: string },
-  ) => Promise<{ downloadUrl?: string; download_url?: string }>;
+type OpenAIContext = {
   toolResponseMetadata?: unknown;
 };
 
-type PreparedChatGptFile = {
-  file: File;
-  resourceUri: string;
-};
-
-type FileHandoffStage =
-  | "resource"
-  | "integrity"
-  | "size"
-  | "file"
-  | "upload"
-  | "response";
-
 // VoxBridge keeps the optional host handoff bounded independently of any
 // host-specific MIME or size policy.
-const MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES = 8 * 1024 * 1024;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 const app = new App(
-  { name: "VoxBridge Audio Delivery", version: "0.3.0" },
+  { name: "VoxBridge Audio Delivery", version: "0.3.1" },
   { availableDisplayModes: ["inline"] },
   { autoResize: true },
 );
@@ -99,15 +79,10 @@ let currentResource: ResourceLink | undefined;
 let isConnected = false;
 let hostCanDownload = false;
 let hostCanReadResources = false;
-let hostCanUploadFile = false;
-let hostHasFileLibrary = false;
+let hostCanCallTools = false;
 let isDownloading = false;
-let isSavingToChatGpt = false;
-let isPreparingChatGptFile = false;
-let savedChatGptFileId: string | undefined;
-let savedChatGptFileScope: "library" | "plugin" | undefined;
-let chatGptUploadMode: "library" | "plugin" = "plugin";
-let preparedChatGptFile: PreparedChatGptFile | undefined;
+let isMaterializingForChatGpt = false;
+let materializedForChatGpt = false;
 let cachedFileResourceUri: string | undefined;
 let cachedFileBase64: string | undefined;
 let cachedFileBytes: ArrayBuffer | undefined;
@@ -133,46 +108,8 @@ function requiredElement<T extends HTMLElement>(id: string): T {
   return element as T;
 }
 
-function getOpenAIFileBridge(): OpenAIFileBridge | undefined {
-  return (window as typeof window & { openai?: OpenAIFileBridge }).openai;
-}
-
-function fileHandoffCode(stage: FileHandoffStage) {
-  const codes: Record<FileHandoffStage, string> = {
-    resource: "VB-HANDOFF-READ",
-    integrity: "VB-HANDOFF-INTEGRITY",
-    size: "VB-HANDOFF-SIZE",
-    file: "VB-HANDOFF-FILE",
-    upload: "VB-HANDOFF-UPLOAD",
-    response: "VB-HANDOFF-RESPONSE",
-  };
-  return codes[stage];
-}
-
-function recordFileHandoffFailure(stage: FileHandoffStage, error: unknown) {
-  // Host exceptions can contain temporary URLs or opaque identifiers. Keep the
-  // user-visible and console diagnostics stable without echoing those values.
-  const errorType = error instanceof DOMException
-    ? error.name
-    : error instanceof Error
-      ? error.constructor.name
-      : typeof error;
-  console.warn(`[VoxBridge] ${fileHandoffCode(stage)} (${errorType})`);
-}
-
-function extractUploadedFileId(result: unknown) {
-  if (typeof result === "string") return result.trim() || undefined;
-  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
-  const candidate = result as { fileId?: unknown; file_id?: unknown };
-  const fileId = candidate.fileId ?? candidate.file_id;
-  return typeof fileId === "string" && fileId.trim() ? fileId : undefined;
-}
-
-function extractDownloadUrl(result: unknown) {
-  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
-  const candidate = result as { downloadUrl?: unknown; download_url?: unknown };
-  const downloadUrl = candidate.downloadUrl ?? candidate.download_url;
-  return typeof downloadUrl === "string" && downloadUrl.trim() ? downloadUrl : undefined;
+function getOpenAIContext(): OpenAIContext | undefined {
+  return (window as typeof window & { openai?: OpenAIContext }).openai;
 }
 
 function setStatus(message: string, kind: "neutral" | "success" | "error" = "neutral") {
@@ -190,52 +127,28 @@ function setDownloading(value: boolean) {
 
 function refreshChatGptButton() {
   saveChatGptButton.disabled =
-    isSavingToChatGpt ||
-    isPreparingChatGptFile ||
-    !hostCanUploadFile ||
-    Boolean(savedChatGptFileId);
-  saveChatGptButton.setAttribute(
-    "aria-busy",
-    String(isSavingToChatGpt || isPreparingChatGptFile),
-  );
-  resolvedSaveChatGptLabel.textContent = isSavingToChatGpt
-    ? chatGptUploadMode === "library"
-      ? "Saving to ChatGPT…"
-      : "Uploading to ChatGPT…"
-    : isPreparingChatGptFile
-      ? "Preparing audio…"
-      : savedChatGptFileId
-        ? savedChatGptFileScope === "library"
-          ? "Saved to ChatGPT"
-          : "Uploaded to ChatGPT"
-        : !preparedChatGptFile
-          ? "Prepare for ChatGPT"
-          : chatGptUploadMode === "library"
-            ? "Save to ChatGPT"
-            : "Upload to ChatGPT";
+    isMaterializingForChatGpt || materializedForChatGpt || !currentResource;
+  saveChatGptButton.setAttribute("aria-busy", String(isMaterializingForChatGpt));
+  resolvedSaveChatGptLabel.textContent = isMaterializingForChatGpt
+    ? "Adding file to ChatGPT…"
+    : materializedForChatGpt
+      ? "Added to ChatGPT"
+      : "Add file to ChatGPT";
 }
 
-function setSavingToChatGpt(value: boolean) {
-  isSavingToChatGpt = value;
-  refreshChatGptButton();
-}
-
-function setPreparingChatGptFile(value: boolean) {
-  isPreparingChatGptFile = value;
+function setMaterializingForChatGpt(value: boolean) {
+  isMaterializingForChatGpt = value;
   refreshChatGptButton();
 }
 
 function resetFileHandoff() {
-  isPreparingChatGptFile = false;
-  preparedChatGptFile = undefined;
-  chatGptUploadMode = hostHasFileLibrary ? "library" : "plugin";
-  savedChatGptFileId = undefined;
-  savedChatGptFileScope = undefined;
+  isMaterializingForChatGpt = false;
+  materializedForChatGpt = false;
   cachedFileResourceUri = undefined;
   cachedFileBase64 = undefined;
   cachedFileBytes = undefined;
   cachedFileMimeType = undefined;
-  setSavingToChatGpt(false);
+  refreshChatGptButton();
 }
 
 function canChatGptHandoff(
@@ -243,15 +156,23 @@ function canChatGptHandoff(
   metadata: SpeechMetadata = currentMetadata,
 ) {
   const handoffSize = resource?.size ?? metadata.file_size_bytes;
+  const configuredLimit = metadata.materialize_max_bytes;
+  const handoffLimit =
+    typeof configuredLimit === "number" &&
+    Number.isFinite(configuredLimit) &&
+    configuredLimit >= 0
+      ? configuredLimit
+      : DEFAULT_MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES;
   return Boolean(
     resource &&
-    hostCanUploadFile &&
-    (handoffSize === undefined || handoffSize <= MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES),
+    hostCanCallTools &&
+    (handoffSize === undefined || handoffSize <= handoffLimit),
   );
 }
 
 function updateFileActions(resource: ResourceLink | undefined) {
   const canSaveToChatGpt = canChatGptHandoff(resource);
+  refreshChatGptButton();
   downloadButton.hidden = !hostCanDownload;
   saveChatGptButton.hidden = !canSaveToChatGpt;
   actions.hidden = !resource || (!hostCanDownload && !canSaveToChatGpt);
@@ -388,7 +309,7 @@ function parseAppAudioMetadata(
   // envelope, including hidden _meta. Check the known envelope branches only
   // when they also identify the current resource URI.
   const pending: unknown[] = [result];
-  const responseMetadata = getOpenAIFileBridge()?.toolResponseMetadata;
+  const responseMetadata = getOpenAIContext()?.toolResponseMetadata;
   if (envelopeContainsResourceUri(responseMetadata, resourceUri)) {
     pending.push(responseMetadata);
   }
@@ -442,22 +363,6 @@ async function loadFileResource(resource: ResourceLink) {
   cachedFileBase64 = audio.data;
   cachedFileMimeType = audio.mimeType;
   return audio;
-}
-
-async function loadFileBytes(resource: ResourceLink) {
-  if (
-    cachedFileResourceUri === resource.uri &&
-    cachedFileBytes &&
-    cachedFileMimeType
-  ) {
-    return { bytes: cachedFileBytes, mimeType: cachedFileMimeType };
-  }
-  const audio = await loadFileResource(resource);
-  const bytes = decodeBase64Audio(audio.data, audio.mimeType);
-  cachedFileResourceUri = resource.uri;
-  cachedFileBytes = bytes;
-  cachedFileMimeType = audio.mimeType;
-  return { bytes, mimeType: audio.mimeType };
 }
 
 function verifyFileEnvelope(
@@ -581,14 +486,8 @@ function fileDeliveryStatus() {
   return hostCanDownload
     ? "The audio file remains ready to download."
     : canChatGptHandoff(currentResource)
-      ? "Use the ChatGPT file handoff below, or ask ChatGPT to retrieve the existing VoxBridge file."
+      ? "Choose Add file to ChatGPT below to attach the exact existing VoxBridge file without regenerating it."
       : "Ask ChatGPT to retrieve the existing VoxBridge file; do not regenerate it.";
-}
-
-function fileFallbackStatus() {
-  return hostCanDownload
-    ? "Download remains available."
-    : "The VoxBridge file remains available to ChatGPT; ask it to retrieve the existing file rather than regenerate it.";
 }
 
 function showPlaybackUnavailable(reason: string) {
@@ -666,9 +565,6 @@ function renderResult(result: ToolResult) {
     }
     if (appAudio && preparePlayback(appAudio)) {
       cachedFileBytes = playbackBytes;
-      if (canChatGptHandoff(resource, metadata)) {
-        void prepareCurrentFileForChatGpt(resource, resultRevision, false);
-      }
       setStatus(
         hostCanDownload
           ? "Ready to play or download."
@@ -915,186 +811,111 @@ async function downloadCurrentResource() {
   }
 }
 
-async function prepareCurrentFileForChatGpt(
-  resource: ResourceLink,
-  revision: number,
-  announceReady: boolean,
-) {
-  if (isPreparingChatGptFile) return;
-  if (preparedChatGptFile?.resourceUri === resource.uri) {
-    if (announceReady) {
-      setStatus(
-        chatGptUploadMode === "library"
-          ? "Audio is prepared. Choose Save to ChatGPT again to add it to your reusable file library."
-          : "Audio is prepared. Choose Upload to ChatGPT again to upload it for this plugin.",
-        "success",
-      );
+function findMaterializedAudio(value: unknown) {
+  const pending: unknown[] = [value];
+  const seen = new Set<object>();
+  for (let index = 0; index < pending.length && index < 40; index += 1) {
+    const candidate = pending[index];
+    if (Array.isArray(candidate)) {
+      pending.push(...candidate.slice(0, 20));
+      continue;
     }
-    return;
-  }
+    const record = asRecord(candidate);
+    if (!record || seen.has(record)) continue;
+    seen.add(record);
 
-  let stage: FileHandoffStage = "resource";
-  const metadata = currentMetadata;
-  setPreparingChatGptFile(true);
-  if (announceReady) {
-    setStatus("Preparing the generated audio for ChatGPT…");
-  }
-  try {
-    const { bytes, mimeType } = await loadFileBytes(resource);
-    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
-    stage = "integrity";
-    await verifyFileBytes(bytes, resource, metadata);
-    stage = "size";
-    if (bytes.byteLength > MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES) {
-      throw new Error("Audio exceeds VoxBridge's 8 MiB ChatGPT handoff safety cap");
-    }
-    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
-    stage = "file";
-    const file = new File([bytes], resource.name, { type: mimeType });
-    preparedChatGptFile = { file, resourceUri: resource.uri };
-    if (announceReady) {
-      setStatus(
-        chatGptUploadMode === "library"
-          ? "Audio is prepared. Choose Save to ChatGPT again to add it to your reusable file library."
-          : "Audio is prepared. Choose Upload to ChatGPT again to upload it for this plugin.",
-        "success",
-      );
-    }
-  } catch (error) {
-    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
-    recordFileHandoffFailure(stage, error);
-    if (announceReady) {
-      setStatus(
-        `ChatGPT file preparation failed (${fileHandoffCode(stage)}). ${fileFallbackStatus()}`,
-        "error",
-      );
-    }
-  } finally {
-    if (revision === resultRevision && currentResource?.uri === resource.uri) {
-      setPreparingChatGptFile(false);
-    }
-  }
-}
-
-function handleChatGptUploadFailure(
-  uploadMode: "library" | "plugin",
-  resource: ResourceLink,
-  revision: number,
-  error: unknown,
-) {
-  if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
-  recordFileHandoffFailure("upload", error);
-  setSavingToChatGpt(false);
-  if (uploadMode === "library") {
-    chatGptUploadMode = "plugin";
-    refreshChatGptButton();
-    setStatus(
-      `The reusable ChatGPT library save did not complete. Choose Upload to ChatGPT to try an ordinary plugin upload. ${fileFallbackStatus()}`,
-      "error",
-    );
-    return;
-  }
-  setStatus(
-    `ChatGPT file handoff failed (${fileHandoffCode("upload")}). ${fileFallbackStatus()}`,
-    "error",
-  );
-}
-
-async function finishChatGptUpload(
-  uploadPromise: ReturnType<NonNullable<OpenAIFileBridge["uploadFile"]>>,
-  bridge: OpenAIFileBridge,
-  uploadMode: "library" | "plugin",
-  resource: ResourceLink,
-  revision: number,
-) {
-  let stage: FileHandoffStage = "upload";
-  try {
-    const uploaded = await uploadPromise;
-    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
-    stage = "response";
-    const uploadedFileId = extractUploadedFileId(uploaded);
-    if (!uploadedFileId) {
-      throw new Error("ChatGPT did not return a file id");
-    }
-    let confirmedAvailable = false;
-    if (bridge.getFileDownloadUrl) {
-      try {
-        const downloadable = await bridge.getFileDownloadUrl({ fileId: uploadedFileId });
-        confirmedAvailable = Boolean(extractDownloadUrl(downloadable));
-      } catch {
-        // The upload itself succeeded. URL confirmation is an optional second
-        // check and must not misreport a saved file as an upload failure.
+    if (record.type === "resource") {
+      const resource = asRecord(record.resource);
+      const blob = resource?.blob;
+      const mimeType = resource?.mimeType;
+      if (
+        typeof blob === "string" &&
+        typeof mimeType === "string" &&
+        mimeType.toLowerCase().startsWith("audio/")
+      ) {
+        return { data: blob, mimeType };
       }
     }
-    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
-    savedChatGptFileId = uploadedFileId;
-    savedChatGptFileScope = uploadMode;
-    setStatus(
-      uploadMode === "library"
-        ? confirmedAvailable
-          ? "Saved to ChatGPT and confirmed available. Select this audio from your file library for a later tool or message."
-          : "Saved to ChatGPT. Select this audio from your file library for a later tool or message."
-        : confirmedAvailable
-          ? "Uploaded to ChatGPT and confirmed available to this plugin."
-          : "Uploaded to ChatGPT for this plugin.",
-      "success",
+
+    pending.push(
+      record.content,
+      record.call_tool_result,
+      record.mcp_tool_result,
+      record.callToolResult,
+      record.mcpToolResult,
+      record.result,
     );
-  } catch (error) {
-    if (stage === "upload") {
-      handleChatGptUploadFailure(uploadMode, resource, revision, error);
-      return;
-    }
-    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
-    recordFileHandoffFailure(stage, error);
-    setStatus(
-      `ChatGPT file handoff failed (${fileHandoffCode(stage)}). ${fileFallbackStatus()}`,
-      "error",
-    );
-  } finally {
-    if (revision === resultRevision && currentResource?.uri === resource.uri) {
-      setSavingToChatGpt(false);
-    }
   }
+  return undefined;
 }
 
-function saveCurrentFileToChatGpt() {
-  if (isSavingToChatGpt || savedChatGptFileId || !currentResource) return;
-  const bridge = getOpenAIFileBridge();
-  if (!bridge?.uploadFile) {
-    setStatus("This ChatGPT host does not expose file upload.", "error");
+function resultContainsToolError(value: unknown) {
+  const record = asRecord(value);
+  return record?.isError === true;
+}
+
+function recordMaterializeFailure(error: unknown) {
+  const errorType = error instanceof DOMException
+    ? error.name
+    : error instanceof Error
+      ? error.constructor.name
+      : typeof error;
+  // Host exceptions may contain temporary URLs or opaque identifiers. Keep the
+  // diagnostic stable and avoid echoing their contents.
+  console.warn(`[VoxBridge] VB-HANDOFF-MATERIALIZE (${errorType})`);
+}
+
+async function addCurrentFileToChatGpt() {
+  if (isMaterializingForChatGpt || materializedForChatGpt || !currentResource) return;
+  if (!hostCanCallTools) {
+    setStatus("This host cannot call the audio materialization tool from the App.", "error");
     return;
   }
 
   const resource = currentResource;
+  const metadata = currentMetadata;
   const revision = resultRevision;
-  const prepared = preparedChatGptFile;
-  if (!prepared || prepared.resourceUri !== resource.uri) {
-    void prepareCurrentFileForChatGpt(resource, revision, true);
-    return;
-  }
-
-  const uploadMode = chatGptUploadMode;
-  setSavingToChatGpt(true);
-  setStatus(
-    uploadMode === "library"
-      ? "Saving the generated audio to your ChatGPT file library…"
-      : "Uploading the generated audio to ChatGPT…",
-  );
-
-  // Invoke the host API synchronously inside the trusted click event. Any
-  // resource loading, integrity checks, and File construction happened before
-  // this click so an await cannot consume the host's user-activation window.
-  let uploadPromise: ReturnType<NonNullable<OpenAIFileBridge["uploadFile"]>>;
+  setMaterializingForChatGpt(true);
+  setStatus("Asking ChatGPT to add the exact generated audio file…");
   try {
-    uploadPromise =
-      uploadMode === "library"
-        ? bridge.uploadFile(prepared.file, { library: true })
-        : bridge.uploadFile(prepared.file);
+    const result = await app.callServerTool({
+      name: "materialize_audio_file",
+      arguments: { file_name: resource.name },
+    });
+    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
+    if (resultContainsToolError(result)) {
+      throw new Error("The materialization tool returned an error");
+    }
+
+    const audio = findMaterializedAudio(result);
+    if (!audio) {
+      throw new Error("ChatGPT did not return an embedded audio file");
+    }
+    const bytes = decodeBase64Audio(audio.data, audio.mimeType);
+    await verifyFileBytes(bytes, resource, metadata);
+    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
+
+    cachedFileResourceUri = resource.uri;
+    cachedFileBase64 = audio.data;
+    cachedFileBytes = bytes;
+    cachedFileMimeType = audio.mimeType;
+    materializedForChatGpt = true;
+    setStatus(
+      "ChatGPT received the exact generated audio file. No regeneration occurred.",
+      "success",
+    );
   } catch (error) {
-    handleChatGptUploadFailure(uploadMode, resource, revision, error);
-    return;
+    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
+    recordMaterializeFailure(error);
+    setStatus(
+      "ChatGPT did not add the file. If the temporary VoxBridge file is still valid, retry without regenerating it; use Download when offered.",
+      "error",
+    );
+  } finally {
+    if (revision === resultRevision && currentResource?.uri === resource.uri) {
+      setMaterializingForChatGpt(false);
+    }
   }
-  void finishChatGptUpload(uploadPromise, bridge, uploadMode, resource, revision);
 }
 
 downloadButton.addEventListener("click", () => {
@@ -1102,7 +923,7 @@ downloadButton.addEventListener("click", () => {
 });
 
 saveChatGptButton.addEventListener("click", () => {
-  void saveCurrentFileToChatGpt();
+  void addCurrentFileToChatGpt();
 });
 
 playPauseButton.addEventListener("click", () => {
@@ -1164,14 +985,11 @@ try {
   const hostCapabilities = app.getHostCapabilities();
   hostCanDownload = hostCapabilities?.downloadFile !== undefined;
   hostCanReadResources = hostCapabilities?.serverResources !== undefined;
-  const openaiFileBridge = getOpenAIFileBridge();
-  hostCanUploadFile = typeof openaiFileBridge?.uploadFile === "function";
-  hostHasFileLibrary = typeof openaiFileBridge?.selectFiles === "function";
-  chatGptUploadMode = hostHasFileLibrary ? "library" : "plugin";
-  setSavingToChatGpt(false);
+  hostCanCallTools = hostCapabilities?.serverTools !== undefined;
+  setMaterializingForChatGpt(false);
   downloadButton.disabled = !hostCanDownload;
   downloadButton.hidden = !hostCanDownload;
-  saveChatGptButton.hidden = !hostCanUploadFile;
+  saveChatGptButton.hidden = true;
   if (latestResult) {
     renderResult(latestResult);
   } else {
