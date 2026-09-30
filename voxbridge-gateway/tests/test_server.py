@@ -191,10 +191,13 @@ async def test_generate_speech_returns_metadata_and_app_playback_file(
         "file_size_bytes": len(b"fake-audio"),
         "sha256": hashlib.sha256(b"fake-audio").hexdigest(),
         "resource_uri": metadata["resource_uri"],
+        "materialize_resource_uri": metadata["materialize_resource_uri"],
         "download_expires_at": metadata["download_expires_at"],
     }
     assert re.fullmatch(r"voxbridge-[0-9a-f]{32}\.wav", metadata["file_name"])
     assert metadata["resource_uri"].endswith(f"/{metadata['file_name']}")
+    file_id = metadata["file_name"].removeprefix("voxbridge-").removesuffix(".wav")
+    assert metadata["materialize_resource_uri"] == f"voxbridge://audio/{file_id}"
     assert metadata["download_expires_at"].endswith("Z")
     assert isinstance(output.content[1], ResourceLink)
     assert output.content[1].uri == metadata["resource_uri"]
@@ -351,10 +354,12 @@ async def test_delivery_selects_playback_file_or_both(
     if file_included:
         assert metadata["file_name"]
         assert metadata["resource_uri"]
+        assert metadata["materialize_resource_uri"]
         assert metadata["download_expires_at"]
     else:
         assert "file_name" not in metadata
         assert "resource_uri" not in metadata
+        assert "materialize_resource_uri" not in metadata
         assert "download_expires_at" not in metadata
 
 
@@ -645,9 +650,9 @@ def test_materialize_audio_file_returns_embedded_bytes_and_metadata():
         b"materialized-audio",
         mime_type="audio/mpeg",
         format_id="mp3",
-        file_name="voxbridge-safe.mp3",
+        file_name=f"voxbridge-{'1' * 32}.mp3",
     )
-    resource_uri = server._resource_uri(artifact.format_id, token, artifact.file_name)
+    resource_uri = server._materialize_resource_uri(artifact.file_name)
 
     output = server.materialize_audio_file(resource_uri)
 
@@ -656,7 +661,7 @@ def test_materialize_audio_file_returns_embedded_bytes_and_metadata():
     assert metadata == {
         "synthetic_audio": True,
         "materialized": True,
-        "file_name": "voxbridge-safe.mp3",
+        "file_name": f"voxbridge-{'1' * 32}.mp3",
         "file_mime_type": "audio/mpeg",
         "file_size_bytes": len(b"materialized-audio"),
         "sha256": hashlib.sha256(b"materialized-audio").hexdigest(),
@@ -665,9 +670,15 @@ def test_materialize_audio_file_returns_embedded_bytes_and_metadata():
     assert output.structured_content == metadata
     embedded = output.content[1]
     assert isinstance(embedded, EmbeddedResource)
-    assert str(embedded.resource.uri) == "file:///voxbridge-safe.mp3"
+    assert str(embedded.resource.uri) == f"file:///voxbridge-{'1' * 32}.mp3"
     assert embedded.resource.mime_type == "audio/mpeg"
     assert base64.b64decode(embedded.resource.blob) == b"materialized-audio"
+
+    canonical_uri = server._resource_uri(artifact.format_id, token, artifact.file_name)
+    canonical_output = server.materialize_audio_file(canonical_uri)
+    canonical_embedded = canonical_output.content[1]
+    assert isinstance(canonical_embedded, EmbeddedResource)
+    assert base64.b64decode(canonical_embedded.resource.blob) == b"materialized-audio"
 
 
 async def test_mcp_client_receives_materialized_audio_bytes(monkeypatch):
@@ -679,7 +690,12 @@ async def test_mcp_client_receives_materialized_audio_bytes(monkeypatch):
             "generate_speech",
             {"provider": "fake", "text": "Hello", "delivery": "file"},
         )
-        resource_uri = json.loads(generated.content[0].text)["resource_uri"]
+        generated_metadata = json.loads(generated.content[0].text)
+        resource_uri = generated_metadata["materialize_resource_uri"]
+        generated_file_id = (
+            generated_metadata["file_name"].removeprefix("voxbridge-").removesuffix(".wav")
+        )
+        assert resource_uri == f"voxbridge://audio/{generated_file_id}"
         materialized = await client.call_tool(
             "materialize_audio_file",
             {"resource_uri": resource_uri},
@@ -701,6 +717,7 @@ async def test_mcp_client_receives_materialized_audio_bytes(monkeypatch):
         "voxbridge://wrong/mp3/token/file.mp3",
         "voxbridge://audio/mp3/token/file.mp3?query=1",
         "voxbridge://audio/mp3/too",
+        "voxbridge://audio/not-a-generated-file-id",
     ],
 )
 def test_materialize_audio_file_rejects_non_voxbridge_resources(resource_uri):
@@ -711,6 +728,8 @@ def test_materialize_audio_file_rejects_non_voxbridge_resources(resource_uri):
 def test_materialize_audio_file_rejects_expired_and_oversized_resources(monkeypatch):
     with pytest.raises(ToolError, match="unavailable or has expired"):
         server.materialize_audio_file("voxbridge://audio/mp3/expired/audio.mp3")
+    with pytest.raises(ToolError, match="unavailable or has expired"):
+        server.materialize_audio_file(f"voxbridge://audio/{'0' * 32}")
 
     token, artifact = server._audio_artifacts.put(
         b"four",
@@ -854,7 +873,11 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert set(segment_schema["required"]) == {"text", "voice_id"}
     assert segment_schema["properties"]["pause_after_ms"]["default"] == 250
     assert set(by_name["materialize_audio_file"].input_schema["required"]) == {"resource_uri"}
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v6.html"
+    materialize_uri_schema = by_name["materialize_audio_file"].input_schema["properties"][
+        "resource_uri"
+    ]
+    assert "materialize_resource_uri" in materialize_uri_schema["description"]
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v7.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     assert by_name["generate_dialogue"].meta == generate_meta
@@ -893,8 +916,14 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert "VoxBridge" in document.text
     assert "downloadFile" in document.text
     assert "uploadFile" in document.text
+    assert "selectFiles" in document.text
     assert "getFileDownloadUrl" in document.text
     assert "Save to ChatGPT" in document.text
+    assert "Upload to ChatGPT" in document.text
+    assert "VB-HANDOFF-READ" in document.text
+    assert "VB-HANDOFF-INTEGRITY" in document.text
+    assert "VB-HANDOFF-UPLOAD" in document.text
+    assert "VB-HANDOFF-RESPONSE" in document.text
     assert 'id="play-pause"' in document.text
     assert "AudioContext" in document.text
     assert "decodeAudioData" in document.text

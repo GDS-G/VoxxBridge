@@ -1,6 +1,6 @@
 # VoxBridge
 
-VoxBridge is a provider-neutral voice-generation plugin and MCP gateway. This repository contains hardened `0.3.0` gateway and plugin candidates plus a private hosted-gateway image.
+VoxBridge is a provider-neutral voice-generation plugin and MCP gateway. This repository contains a hardened `0.3.0` gateway, the `0.3.1` private plugin candidate, and a private hosted-gateway image.
 
 ## Repository layout
 

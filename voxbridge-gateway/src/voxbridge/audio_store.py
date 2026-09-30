@@ -75,6 +75,18 @@ class AudioArtifactStore:
                 self._items.move_to_end(token)
             return artifact
 
+    def get_by_file_name(self, file_name: str) -> AudioArtifact | None:
+        """Return the newest live artifact with an exact generated file name."""
+
+        with self._lock:
+            self._purge_expired(self._clock())
+            for token in reversed(self._items):
+                artifact = self._items[token]
+                if artifact.file_name == file_name:
+                    self._items.move_to_end(token)
+                    return artifact
+            return None
+
     def clear(self) -> None:
         with self._lock:
             self._items.clear()

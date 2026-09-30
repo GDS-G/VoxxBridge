@@ -98,7 +98,7 @@ def test_store_tokens_are_opaque_and_unique():
         format_id="mp3",
         file_name="same.mp3",
     )
-    second, _ = store.put(
+    second, second_artifact = store.put(
         b"two",
         mime_type="audio/mpeg",
         format_id="mp3",
@@ -110,3 +110,5 @@ def test_store_tokens_are_opaque_and_unique():
     assert "same" not in second
     assert len(first) >= 32
     assert len(second) >= 32
+    assert store.get_by_file_name("same.mp3") == second_artifact
+    assert store.get_by_file_name("missing.mp3") is None

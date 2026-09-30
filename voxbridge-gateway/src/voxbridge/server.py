@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from importlib.resources import files
@@ -38,7 +39,7 @@ from voxbridge.models import DialogueSegment, SpeechRequest, SpeechResult
 from voxbridge.providers.base import ProviderError
 from voxbridge.registry import REGISTRY, close_registry
 
-_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v6.html"
+_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v7.html"
 _AUDIO_DELIVERY_UI_HTML = (
     files("voxbridge").joinpath("ui").joinpath("audio-delivery-v1.html").read_text(encoding="utf-8")
 )
@@ -70,8 +71,9 @@ mcp = MCPServer(
         "Provider-neutral text-to-speech. Never switch providers silently. "
         "Generated audio is synthetic. Use delivery='playback', 'file', or 'both' "
         "to choose the returned representation. Use generate_dialogue for an ordered, "
-        "single-provider, multi-voice WAV file. Use materialize_audio_file only when a "
-        "compatible downstream tool needs the generated file bytes."
+        "single-provider, multi-voice WAV file. Pass the exact materialize_resource_uri "
+        "from a generation result to materialize_audio_file only when a compatible "
+        "downstream tool needs the generated file bytes."
     ),
     extensions=[_apps],
     lifespan=_lifespan,
@@ -99,6 +101,9 @@ _AUDIO_FILE_TYPES = {
     "audio/x-flac": ("flac", "flac", "audio/flac"),
     "audio/x-wav": ("wav", "wav", "audio/wav"),
 }
+_AUDIO_FILE_NAME_PATTERN = re.compile(
+    r"^voxbridge-(?P<file_id>[0-9a-f]{32})\.(?P<extension>[a-z0-9]+)$"
+)
 
 
 def _reject_nonstandard_json_constant(value: str) -> None:
@@ -121,6 +126,13 @@ def _resource_uri(format_id: str, token: str, file_name: str) -> str:
     return f"voxbridge://audio/{format_id}/{token}/{file_name}"
 
 
+def _materialize_resource_uri(file_name: str) -> str:
+    match = _AUDIO_FILE_NAME_PATTERN.fullmatch(file_name)
+    if match is None:  # pragma: no cover - generated names always use this pattern
+        raise ToolError("Generated audio file name cannot be materialized")
+    return f"voxbridge://audio/{match.group('file_id')}"
+
+
 def _read_audio_artifact(
     token: str,
     file_name: str,
@@ -141,9 +153,18 @@ def _artifact_from_resource_uri(resource_uri: str) -> AudioArtifact:
         or parsed.netloc != "audio"
         or parsed.query
         or parsed.fragment
-        or len(parts) != 3
-        or not all(parts)
     ):
+        raise ToolError("resource_uri is not a valid VoxBridge audio resource")
+
+    if len(parts) == 1 and re.fullmatch(r"[0-9a-f]{32}", parts[0]):
+        file_id = parts[0]
+        for extension in sorted({details[1] for details in _AUDIO_FILE_TYPES.values()}):
+            artifact = _audio_artifacts.get_by_file_name(f"voxbridge-{file_id}.{extension}")
+            if artifact is not None:
+                return artifact
+        raise ToolError("Audio file is unavailable or has expired")
+
+    if len(parts) != 3 or not all(parts):
         raise ToolError("resource_uri is not a valid VoxBridge audio resource")
     format_id, token, file_name = parts
     artifact = _audio_artifacts.get(token)
@@ -333,6 +354,7 @@ def _build_delivery_result(
                 "file_name": file_name,
                 "file_mime_type": file_mime_type,
                 "resource_uri": resource_uri,
+                "materialize_resource_uri": _materialize_resource_uri(file_name),
                 "download_expires_at": expires_at,
             }
         )
@@ -699,21 +721,35 @@ async def generate_dialogue(
         openWorldHint=False,
     ),
 )
-def materialize_audio_file(resource_uri: str) -> CallToolResult:
+def materialize_audio_file(
+    resource_uri: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=512,
+            description=(
+                "Use the exact materialize_resource_uri returned by generate_speech or "
+                "generate_dialogue. The longer resource_uri is also accepted."
+            ),
+        ),
+    ],
+) -> CallToolResult:
     """Return a generated audio resource as an embedded binary file.
 
-    Call this with `resource_uri` from generate_speech or generate_dialogue only
-    when an MCP client or compatible downstream tool explicitly accepts embedded
-    resources. ChatGPT does not guarantee that an EmbeddedResource becomes a
-    registered file attachment. The ordinary ResourceLink remains the efficient
-    download path; this bounded, opt-in result avoids embedding every audio file.
+    Call this with the exact `materialize_resource_uri` from generate_speech or
+    generate_dialogue only when an MCP client or compatible downstream tool
+    explicitly accepts embedded resources. The longer `resource_uri` is retained
+    as a backward-compatible input. ChatGPT does not guarantee that an
+    EmbeddedResource becomes a registered file attachment. The ordinary
+    ResourceLink remains the efficient download path; this bounded, opt-in result
+    avoids embedding every audio file.
     """
 
     artifact = _artifact_from_resource_uri(resource_uri)
     if len(artifact.data) > settings.voxbridge_max_materialized_audio_bytes:
         raise ToolError(
             "Audio file is too large for inline tool handoff; use the Download or "
-            "Save to ChatGPT action instead"
+            "ChatGPT handoff action instead"
         )
     file_uri = f"file:///{quote(artifact.file_name, safe='')}"
     metadata = {
