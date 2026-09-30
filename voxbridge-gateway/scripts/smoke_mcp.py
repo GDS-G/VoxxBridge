@@ -40,9 +40,12 @@ async def check(url: str) -> None:
         if dialogue.meta != generate.meta:
             raise RuntimeError("generate_dialogue MCP App binding is unavailable")
         materialize = next(tool for tool in tools.tools if tool.name == "materialize_audio_file")
-        if set(materialize.input_schema.get("required", [])) != {"resource_uri"}:
+        materialize_properties = materialize.input_schema.get("properties", {})
+        if materialize.input_schema.get("required") or not {"resource_uri", "file_name"}.issubset(
+            materialize_properties
+        ):
             raise RuntimeError("materialize_audio_file schema is unavailable")
-        ui_uri = "ui://voxbridge/audio-delivery-v7.html"
+        ui_uri = "ui://voxbridge/audio-delivery-v8.html"
         if generate.meta is None or generate.meta.get("ui", {}).get("resourceUri") != ui_uri:
             raise RuntimeError("generate_speech MCP App binding is unavailable")
         resources = await client.list_resources(cache_mode="reload")

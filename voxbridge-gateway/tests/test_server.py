@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
@@ -136,8 +137,10 @@ def test_dialogue_segment_normalizes_and_rejects_voice_ids() -> None:
 
 @pytest.fixture(autouse=True)
 def clear_audio_artifacts():
+    server._generation_replays.clear()
     server._audio_artifacts.clear()
     yield
+    server._generation_replays.clear()
     server._audio_artifacts.clear()
 
 
@@ -211,6 +214,106 @@ async def test_generate_speech_returns_metadata_and_app_playback_file(
         }
     }
     assert output.structured_content == metadata
+
+
+async def test_generate_speech_reuses_normalized_replay_within_openai_session(
+    monkeypatch,
+):
+    provider = FakeProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+    session_a = SimpleNamespace(
+        request_context=SimpleNamespace(meta={"openai/session": "session-a"})
+    )
+    session_b = SimpleNamespace(
+        request_context=SimpleNamespace(meta={"openai/session": "session-b"})
+    )
+
+    first = await server.generate_speech(
+        " FAKE ",
+        "Approval replay",
+        output_format=" WAV ",
+        options_json='{"stability": 0.4, "similarity": 0.8}',
+        ctx=session_a,
+    )
+    replay = await server.generate_speech(
+        "fake",
+        "Approval replay",
+        output_format="wav",
+        options_json='{"similarity":0.8,"stability":0.4}',
+        ctx=session_a,
+    )
+
+    assert len(provider.generated) == 1
+    assert replay is first
+    assert (
+        json.loads(replay.content[0].text)["file_name"]
+        == json.loads(first.content[0].text)["file_name"]
+    )
+
+    await server.generate_speech(
+        "fake",
+        "Approval replay",
+        output_format="wav",
+        options_json='{"similarity":0.8,"stability":0.4}',
+        ctx=session_b,
+    )
+    await server.generate_speech(
+        "fake",
+        "Different text",
+        output_format="wav",
+        options_json='{"similarity":0.8,"stability":0.4}',
+        ctx=session_a,
+    )
+
+    assert len(provider.generated) == 3
+
+
+async def test_generate_speech_coalesces_concurrent_identical_calls(monkeypatch):
+    provider = FakeProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def generate_after_release(request):
+        provider.generated.append(request)
+        started.set()
+        await release.wait()
+        return provider.result
+
+    monkeypatch.setattr(provider, "generate", generate_after_release)
+    first = asyncio.create_task(server.generate_speech("fake", "Concurrent replay"))
+    await started.wait()
+    second = asyncio.create_task(server.generate_speech("fake", "Concurrent replay"))
+    await asyncio.sleep(0)
+    release.set()
+
+    first_output, second_output = await asyncio.gather(first, second)
+    assert first_output is second_output
+    assert len(provider.generated) == 1
+
+
+async def test_generate_speech_does_not_cache_provider_failures(monkeypatch):
+    provider = FakeProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+    attempts = 0
+
+    async def fail_once(request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ProviderError("temporary provider failure")
+        provider.generated.append(request)
+        return provider.result
+
+    monkeypatch.setattr(provider, "generate", fail_once)
+
+    with pytest.raises(ToolError, match="temporary provider failure"):
+        await server.generate_speech("fake", "Retry after failure")
+
+    recovered = await server.generate_speech("fake", "Retry after failure")
+    assert recovered.is_error is False
+    assert attempts == 2
+    assert len(provider.generated) == 1
 
 
 @pytest.mark.parametrize(
@@ -447,6 +550,24 @@ async def test_generate_dialogue_preserves_voice_order_controls_and_pauses(monke
     assert samples == [101, 102, 0, 0, 201, 0, 301, 302]
 
 
+async def test_generate_dialogue_reuses_exact_approval_replay(monkeypatch):
+    provider = DialogueProvider({"one": _pcm_wav([1]), "two": _pcm_wav([2])})
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+    segments = [
+        DialogueSegment(text="One", voice_id="one", pause_after_ms=0),
+        DialogueSegment(text="Two", voice_id="two", pause_after_ms=0),
+    ]
+
+    first = await server.generate_dialogue("fake", segments, delivery="both")
+    replay = await server.generate_dialogue("fake", segments, delivery="both")
+
+    assert replay is first
+    assert [request.voice_id for request in provider.generated] == ["one", "two"]
+
+    await server.generate_dialogue("fake", segments, delivery="file")
+    assert [request.voice_id for request in provider.generated] == ["one", "two", "one", "two"]
+
+
 @pytest.mark.parametrize(
     ("delivery", "content_types", "has_file", "has_app_audio"),
     [
@@ -680,6 +801,13 @@ def test_materialize_audio_file_returns_embedded_bytes_and_metadata():
     assert isinstance(canonical_embedded, EmbeddedResource)
     assert base64.b64decode(canonical_embedded.resource.blob) == b"materialized-audio"
 
+    file_name_output = server.materialize_audio_file(file_name=artifact.file_name)
+    file_name_metadata = json.loads(file_name_output.content[0].text)
+    assert file_name_metadata["source_resource_uri"] == resource_uri
+    file_name_embedded = file_name_output.content[1]
+    assert isinstance(file_name_embedded, EmbeddedResource)
+    assert base64.b64decode(file_name_embedded.resource.blob) == b"materialized-audio"
+
 
 async def test_mcp_client_receives_materialized_audio_bytes(monkeypatch):
     provider = FakeProvider()
@@ -708,6 +836,60 @@ async def test_mcp_client_receives_materialized_audio_bytes(monkeypatch):
     assert isinstance(embedded, EmbeddedResource)
     assert embedded.resource.mime_type == "audio/wav"
     assert base64.b64decode(embedded.resource.blob) == b"fake-audio"
+
+
+async def test_mcp_client_materializes_by_exact_generated_file_name(monkeypatch):
+    provider = FakeProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    async with Client(server.mcp, mode="auto") as client:
+        generated = await client.call_tool(
+            "generate_speech",
+            {"provider": "fake", "text": "Hello", "delivery": "file"},
+        )
+        generated_metadata = json.loads(generated.content[0].text)
+        materialized = await client.call_tool(
+            "materialize_audio_file",
+            {"file_name": generated_metadata["file_name"]},
+        )
+
+    assert generated.is_error is False
+    assert materialized.is_error is False
+    embedded = materialized.content[1]
+    assert isinstance(embedded, EmbeddedResource)
+    assert embedded.resource.mime_type == "audio/wav"
+    assert base64.b64decode(embedded.resource.blob) == b"fake-audio"
+
+
+@pytest.mark.parametrize(
+    ("resource_uri", "file_name"),
+    [
+        (None, None),
+        (f"voxbridge://audio/{'1' * 32}", f"voxbridge-{'1' * 32}.mp3"),
+    ],
+)
+def test_materialize_audio_file_requires_exactly_one_locator(resource_uri, file_name):
+    with pytest.raises(ToolError, match="exactly one of resource_uri or file_name"):
+        server.materialize_audio_file(resource_uri=resource_uri, file_name=file_name)
+
+
+@pytest.mark.parametrize(
+    "file_name",
+    [
+        "audio.mp3",
+        f"voxbridge-{'A' * 32}.mp3",
+        f"voxbridge-{'1' * 32}.exe",
+        f"../voxbridge-{'1' * 32}.mp3",
+    ],
+)
+def test_materialize_audio_file_rejects_invalid_generated_file_names(file_name):
+    with pytest.raises(ToolError, match="not a valid generated VoxBridge audio file name"):
+        server.materialize_audio_file(file_name=file_name)
+
+
+def test_materialize_audio_file_rejects_unavailable_exact_file_name():
+    with pytest.raises(ToolError, match="unavailable or has expired"):
+        server.materialize_audio_file(file_name=f"voxbridge-{'0' * 32}.mp3")
 
 
 @pytest.mark.parametrize(
@@ -857,11 +1039,13 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert by_name["materialize_audio_file"].annotations.read_only_hint is True
     assert by_name["materialize_audio_file"].annotations.open_world_hint is False
     assert set(by_name["generate_speech"].input_schema["required"]) == {"provider", "text"}
+    assert "ctx" not in by_name["generate_speech"].input_schema["properties"]
     delivery_schema = by_name["generate_speech"].input_schema["properties"]["delivery"]
     assert delivery_schema["default"] == "both"
     assert set(delivery_schema["enum"]) == {"playback", "file", "both"}
     generate_meta = by_name["generate_speech"].meta
     dialogue_schema = by_name["generate_dialogue"].input_schema
+    assert "ctx" not in dialogue_schema["properties"]
     assert set(dialogue_schema["required"]) == {"provider", "segments"}
     assert dialogue_schema["properties"]["delivery"]["default"] == "both"
     assert set(dialogue_schema["properties"]["delivery"]["enum"]) == {
@@ -872,12 +1056,17 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     segment_schema = dialogue_schema["$defs"]["DialogueSegment"]
     assert set(segment_schema["required"]) == {"text", "voice_id"}
     assert segment_schema["properties"]["pause_after_ms"]["default"] == 250
-    assert set(by_name["materialize_audio_file"].input_schema["required"]) == {"resource_uri"}
+    assert "required" not in by_name["materialize_audio_file"].input_schema
     materialize_uri_schema = by_name["materialize_audio_file"].input_schema["properties"][
         "resource_uri"
     ]
     assert "materialize_resource_uri" in materialize_uri_schema["description"]
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v7.html"
+    materialize_file_name_schema = by_name["materialize_audio_file"].input_schema["properties"][
+        "file_name"
+    ]
+    assert "exact" in materialize_file_name_schema["description"]
+    assert "host" in materialize_file_name_schema["description"]
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v8.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     assert by_name["generate_dialogue"].meta == generate_meta
@@ -924,6 +1113,7 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert "VB-HANDOFF-INTEGRITY" in document.text
     assert "VB-HANDOFF-UPLOAD" in document.text
     assert "VB-HANDOFF-RESPONSE" in document.text
+    assert "reusable library save was unavailable" in document.text
     assert 'id="play-pause"' in document.text
     assert "AudioContext" in document.text
     assert "decodeAudioData" in document.text
