@@ -45,7 +45,7 @@ async def check(url: str) -> None:
             materialize_properties
         ):
             raise RuntimeError("materialize_audio_file schema is unavailable")
-        ui_uri = "ui://voxbridge/audio-delivery-v9.html"
+        ui_uri = "ui://voxbridge/audio-delivery-v10.html"
         if generate.meta is None or generate.meta.get("ui", {}).get("resourceUri") != ui_uri:
             raise RuntimeError("generate_speech MCP App binding is unavailable")
         resources = await client.list_resources(cache_mode="reload")

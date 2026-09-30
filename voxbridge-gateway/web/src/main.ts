@@ -238,11 +238,20 @@ function resetFileHandoff() {
   setSavingToChatGpt(false);
 }
 
-function updateFileActions(resource: ResourceLink | undefined) {
-  const handoffSize = resource?.size ?? currentMetadata.file_size_bytes;
-  const canSaveToChatGpt =
+function canChatGptHandoff(
+  resource: ResourceLink | undefined,
+  metadata: SpeechMetadata = currentMetadata,
+) {
+  const handoffSize = resource?.size ?? metadata.file_size_bytes;
+  return Boolean(
+    resource &&
     hostCanUploadFile &&
-    (handoffSize === undefined || handoffSize <= MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES);
+    (handoffSize === undefined || handoffSize <= MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES),
+  );
+}
+
+function updateFileActions(resource: ResourceLink | undefined) {
+  const canSaveToChatGpt = canChatGptHandoff(resource);
   downloadButton.hidden = !hostCanDownload;
   saveChatGptButton.hidden = !canSaveToChatGpt;
   actions.hidden = !resource || (!hostCanDownload && !canSaveToChatGpt);
@@ -571,7 +580,7 @@ function formatExpiry(value: string | undefined) {
 function fileDeliveryStatus() {
   return hostCanDownload
     ? "The audio file remains ready to download."
-    : hostCanUploadFile
+    : canChatGptHandoff(currentResource)
       ? "Use the ChatGPT file handoff below, or ask ChatGPT to retrieve the existing VoxBridge file."
       : "Ask ChatGPT to retrieve the existing VoxBridge file; do not regenerate it.";
 }
@@ -620,9 +629,13 @@ function renderResult(result: ToolResult) {
   expiry.textContent = expiresAt ?? "—";
 
   if (delivery === "both") {
-    summary.textContent = "Your audio is ready to play and download.";
+    summary.textContent = hostCanDownload
+      ? "Your audio is ready to play and download."
+      : "Your audio is ready to play, and its file resource is available.";
   } else if (delivery === "file") {
-    summary.textContent = "Your downloadable audio file is ready.";
+    summary.textContent = hostCanDownload
+      ? "Your downloadable audio file is ready."
+      : "Your audio file resource is ready.";
   } else {
     summary.textContent = "Your audio is ready for playback.";
   }
@@ -653,11 +666,7 @@ function renderResult(result: ToolResult) {
     }
     if (appAudio && preparePlayback(appAudio)) {
       cachedFileBytes = playbackBytes;
-      const uploadSize = resource.size ?? metadata.file_size_bytes;
-      if (
-        hostCanUploadFile &&
-        (uploadSize === undefined || uploadSize <= MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES)
-      ) {
+      if (canChatGptHandoff(resource, metadata)) {
         void prepareCurrentFileForChatGpt(resource, resultRevision, false);
       }
       setStatus(

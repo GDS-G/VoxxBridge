@@ -1087,7 +1087,7 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     ]
     assert "exact" in materialize_file_name_schema["description"]
     assert "host" in materialize_file_name_schema["description"]
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v9.html"
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v10.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     assert by_name["generate_dialogue"].meta == generate_meta
