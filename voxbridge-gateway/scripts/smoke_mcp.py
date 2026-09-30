@@ -29,6 +29,14 @@ async def check(url: str) -> None:
             "both",
         }:
             raise RuntimeError("generate_speech delivery schema is unavailable")
+        delivery_output_schema = generate.output_schema or {}
+        if not {
+            "delivery",
+            "file_size_bytes",
+            "sha256",
+            "materialize_max_bytes",
+        }.issubset(delivery_output_schema.get("properties", {})):
+            raise RuntimeError("generate_speech output schema is unavailable")
         dialogue = next(tool for tool in tools.tools if tool.name == "generate_dialogue")
         dialogue_delivery = dialogue.input_schema.get("properties", {}).get("delivery", {})
         if dialogue_delivery.get("default") != "both" or set(dialogue_delivery.get("enum", [])) != {
@@ -39,6 +47,8 @@ async def check(url: str) -> None:
             raise RuntimeError("generate_dialogue delivery schema is unavailable")
         if dialogue.meta != generate.meta:
             raise RuntimeError("generate_dialogue MCP App binding is unavailable")
+        if dialogue.output_schema != generate.output_schema:
+            raise RuntimeError("generate_dialogue output schema is unavailable")
         materialize = next(tool for tool in tools.tools if tool.name == "materialize_audio_file")
         materialize_properties = materialize.input_schema.get("properties", {})
         if materialize.input_schema.get("required") or not {"resource_uri", "file_name"}.issubset(

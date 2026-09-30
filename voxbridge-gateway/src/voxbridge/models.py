@@ -74,3 +74,30 @@ class MaterializedAudioMetadata(BaseModel):
     file_size_bytes: int = Field(ge=1)
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     source_resource_uri: str
+
+
+class SpeechDeliveryMetadata(BaseModel):
+    """Structured metadata shared by single- and multi-voice delivery results."""
+
+    # Providers may add documented metadata such as duration or request tracing.
+    # VoxBridge-owned delivery fields below remain validated and cannot be overridden.
+    model_config = ConfigDict(extra="allow")
+
+    synthetic_audio: Literal[True]
+    provider: str
+    model: str | None
+    mime_type: str
+    request_id: str | None
+    delivery: Literal["playback", "file", "both"]
+    playback_requested: bool
+    inline_audio_included: bool
+    app_resource_playback: bool
+    file_resource_included: bool
+    file_size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    file_name: str | None = None
+    file_mime_type: str | None = None
+    resource_uri: str | None = None
+    materialize_resource_uri: str | None = None
+    materialize_max_bytes: int | None = Field(default=None, ge=1)
+    download_expires_at: str | None = None

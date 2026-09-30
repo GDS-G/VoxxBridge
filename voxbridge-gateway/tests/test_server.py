@@ -1076,6 +1076,25 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert delivery_schema["default"] == "both"
     assert set(delivery_schema["enum"]) == {"playback", "file", "both"}
     generate_meta = by_name["generate_speech"].meta
+    delivery_output_schema = by_name["generate_speech"].output_schema
+    assert delivery_output_schema is not None
+    assert {
+        "synthetic_audio",
+        "provider",
+        "model",
+        "mime_type",
+        "request_id",
+        "delivery",
+        "playback_requested",
+        "inline_audio_included",
+        "app_resource_playback",
+        "file_resource_included",
+        "file_size_bytes",
+        "sha256",
+    }.issubset(delivery_output_schema["required"])
+    assert delivery_output_schema["additionalProperties"] is True
+    materialize_limit_schema = delivery_output_schema["properties"]["materialize_max_bytes"]
+    assert any(option.get("minimum") == 1 for option in materialize_limit_schema["anyOf"])
     dialogue_schema = by_name["generate_dialogue"].input_schema
     assert "ctx" not in dialogue_schema["properties"]
     assert set(dialogue_schema["required"]) == {"provider", "segments"}
@@ -1088,6 +1107,7 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     segment_schema = dialogue_schema["$defs"]["DialogueSegment"]
     assert set(segment_schema["required"]) == {"text", "voice_id"}
     assert segment_schema["properties"]["pause_after_ms"]["default"] == 250
+    assert by_name["generate_dialogue"].output_schema == delivery_output_schema
     assert "required" not in by_name["materialize_audio_file"].input_schema
     materialize_uri_schema = by_name["materialize_audio_file"].input_schema["properties"][
         "resource_uri"

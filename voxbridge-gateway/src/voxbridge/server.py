@@ -42,6 +42,7 @@ from voxbridge.config import settings
 from voxbridge.models import (
     DialogueSegment,
     MaterializedAudioMetadata,
+    SpeechDeliveryMetadata,
     SpeechRequest,
     SpeechResult,
 )
@@ -599,7 +600,7 @@ async def generate_speech(
     options_json: str | None = None,
     delivery: Literal["playback", "file", "both"] = "both",
     ctx: Context | None = None,
-) -> CallToolResult:
+) -> Annotated[CallToolResult, SpeechDeliveryMetadata]:
     """Generate speech for playback, file download, or both from one provider call.
 
     `instructions` is provider-aware: Hume Octave 1 treats it as acting direction and
@@ -667,7 +668,7 @@ async def generate_dialogue(
     language: str | None = None,
     delivery: Literal["playback", "file", "both"] = "both",
     ctx: Context | None = None,
-) -> CallToolResult:
+) -> Annotated[CallToolResult, SpeechDeliveryMetadata]:
     """Generate ordered voice turns and join them into one PCM WAV file.
 
     Each segment selects its own `voice_id`, text, performance controls, and
