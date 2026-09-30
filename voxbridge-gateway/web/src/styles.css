@@ -107,7 +107,8 @@ h1 {
 
 .details[hidden],
 .actions[hidden],
-#expiry-row[hidden] {
+#expiry-row[hidden],
+button[hidden] {
   display: none;
 }
 

@@ -44,7 +44,7 @@ from voxbridge.providers.base import ProviderError
 from voxbridge.registry import REGISTRY, close_registry
 from voxbridge.replay_cache import ReplayCache, ReplayCacheCapacityError
 
-_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v8.html"
+_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v9.html"
 _AUDIO_DELIVERY_UI_HTML = (
     files("voxbridge").joinpath("ui").joinpath("audio-delivery-v1.html").read_text(encoding="utf-8")
 )

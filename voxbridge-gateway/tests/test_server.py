@@ -499,18 +499,38 @@ async def test_generate_dialogue_preserves_voice_order_controls_and_pauses(monke
             DialogueSegment(
                 text="Third",
                 voice_id="kyla",
+                pause_after_ms=3,
+            ),
+            DialogueSegment(
+                text="Fourth",
+                voice_id="julian",
                 # The final pause is deliberately ignored by the dialogue tool.
                 pause_after_ms=9_999,
             ),
         ],
     )
 
-    assert [request.voice_id for request in provider.validated] == ["julian", "ethan", "kyla"]
+    assert [request.voice_id for request in provider.validated] == [
+        "julian",
+        "ethan",
+        "kyla",
+        "julian",
+    ]
     assert provider.generated == provider.validated
-    assert [request.text for request in provider.generated] == ["First", "Second", "Third"]
+    assert [request.text for request in provider.generated] == [
+        "First",
+        "Second",
+        "Third",
+        "Fourth",
+    ]
     assert all(request.output_format == "wav" for request in provider.generated)
     assert all(request.model == "dialogue-model" for request in provider.generated)
-    assert [request.language for request in provider.generated] == ["en-US", "en-GB", "en-US"]
+    assert [request.language for request in provider.generated] == [
+        "en-US",
+        "en-GB",
+        "en-US",
+        "en-US",
+    ]
     assert provider.generated[0].instructions == "Friendly"
     assert provider.generated[0].speed == 1.1
     assert provider.generated[0].options == {"stability": 0.5}
@@ -519,22 +539,23 @@ async def test_generate_dialogue_preserves_voice_order_controls_and_pauses(monke
     downloadable = output.content[1]
     assert isinstance(downloadable, ResourceLink)
     assert metadata["dialogue"] is True
-    assert metadata["segment_count"] == 3
-    assert metadata["provider_call_count"] == 3
-    assert metadata["voice_ids"] == ["julian", "ethan", "kyla"]
-    assert metadata["total_characters"] == 16
-    assert metadata["pause_total_ms"] == 3
+    assert metadata["segment_count"] == 4
+    assert metadata["provider_call_count"] == 4
+    assert metadata["voice_ids"] == ["julian", "ethan", "kyla", "julian"]
+    assert metadata["total_characters"] == 22
+    assert metadata["pause_total_ms"] == 6
     assert metadata["segment_request_ids"] == [
         "request-julian",
         "request-ethan",
         "request-kyla",
+        "request-julian",
     ]
     assert metadata["source_format"] == {
         "channels": 1,
         "sample_width_bytes": 2,
         "sample_rate_hz": 1_000,
     }
-    assert metadata["duration_seconds"] == pytest.approx(0.008)
+    assert metadata["duration_seconds"] == pytest.approx(0.013)
     assert metadata["delivery"] == "both"
     assert metadata["mime_type"] == "audio/wav"
     assert metadata["file_mime_type"] == "audio/wav"
@@ -547,7 +568,7 @@ async def test_generate_dialogue_preserves_voice_order_controls_and_pauses(monke
     assert parameters.nchannels == 1
     assert parameters.sampwidth == 2
     assert parameters.framerate == 1_000
-    assert samples == [101, 102, 0, 0, 201, 0, 301, 302]
+    assert samples == [101, 102, 0, 0, 201, 0, 301, 302, 0, 0, 0, 101, 102]
 
 
 async def test_generate_dialogue_reuses_exact_approval_replay(monkeypatch):
@@ -1066,7 +1087,7 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     ]
     assert "exact" in materialize_file_name_schema["description"]
     assert "host" in materialize_file_name_schema["description"]
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v8.html"
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v9.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     assert by_name["generate_dialogue"].meta == generate_meta
@@ -1109,18 +1130,24 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert "getFileDownloadUrl" in document.text
     assert "Save to ChatGPT" in document.text
     assert "Upload to ChatGPT" in document.text
+    assert "Prepare for ChatGPT" in document.text
+    assert "Choose Save to ChatGPT again" in document.text
+    assert "Choose Upload to ChatGPT" in document.text
     assert "VB-HANDOFF-READ" in document.text
     assert "VB-HANDOFF-INTEGRITY" in document.text
     assert "VB-HANDOFF-UPLOAD" in document.text
     assert "VB-HANDOFF-RESPONSE" in document.text
-    assert "reusable library save was unavailable" in document.text
+    assert "reusable ChatGPT library save did not complete" in document.text
+    assert "toolResponseMetadata" in document.text
+    assert "button[hidden]" in document.text
     assert 'id="play-pause"' in document.text
     assert "AudioContext" in document.text
     assert "decodeAudioData" in document.text
     assert "createBufferSource" in document.text
     assert "URL.createObjectURL" not in document.text
     assert "media-src blob:" not in document.text
-    assert "attached-file Download action" in document.text
+    assert "Ask ChatGPT to retrieve the existing VoxBridge file" in document.text
+    assert "host omits a native Download control" in document.text
     assert "voxbridge/audio" in document.text
     assert "Choose Play audio to load the file for playback" in document.text
     assert "If file approval is pending" in document.text
