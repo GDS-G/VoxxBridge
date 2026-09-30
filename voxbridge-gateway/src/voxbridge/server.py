@@ -148,12 +148,7 @@ def _read_audio_artifact(
 def _artifact_from_resource_uri(resource_uri: str) -> AudioArtifact:
     parsed = urlparse(resource_uri)
     parts = parsed.path.lstrip("/").split("/")
-    if (
-        parsed.scheme != "voxbridge"
-        or parsed.netloc != "audio"
-        or parsed.query
-        or parsed.fragment
-    ):
+    if parsed.scheme != "voxbridge" or parsed.netloc != "audio" or parsed.query or parsed.fragment:
         raise ToolError("resource_uri is not a valid VoxBridge audio resource")
 
     if len(parts) == 1 and re.fullmatch(r"[0-9a-f]{32}", parts[0]):
