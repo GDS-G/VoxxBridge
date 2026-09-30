@@ -71,7 +71,7 @@ async def check(url: str) -> None:
             raise RuntimeError("materialize_audio_file is not visible to the MCP App")
         if materialize_meta.get("openai/widgetAccessible") is not True:
             raise RuntimeError("materialize_audio_file is not accessible to the ChatGPT widget")
-        ui_uri = "ui://voxbridge/audio-delivery-v11.html"
+        ui_uri = "ui://voxbridge/audio-delivery-v12.html"
         if generate.meta is None or generate.meta.get("ui", {}).get("resourceUri") != ui_uri:
             raise RuntimeError("generate_speech MCP App binding is unavailable")
         resources = await client.list_resources(cache_mode="reload")
@@ -86,6 +86,8 @@ async def check(url: str) -> None:
             or "downloadFile" not in ui_document.contents[0].text
             or "materialize_audio_file" not in ui_document.contents[0].text
             or "callServerTool" not in ui_document.contents[0].text
+            or "updateModelContext" not in ui_document.contents[0].text
+            or "openai/modelContext" not in ui_document.contents[0].text
             or "Add file to ChatGPT" not in ui_document.contents[0].text
         ):
             raise RuntimeError("VoxBridge audio delivery app is invalid")

@@ -8,6 +8,9 @@ type AudioContent = Extract<ResultContent, { type: "audio" }>;
 type ResourceReadResult = Awaited<ReturnType<App["readServerResource"]>>;
 type ResourceReadContent = ResourceReadResult["contents"][number];
 type BlobResourceContents = Extract<ResourceReadContent, { blob: string }>;
+type ModelContextUpdate = Parameters<App["updateModelContext"]>[0];
+type ModelContextContent = NonNullable<ModelContextUpdate["content"]>[number];
+type EmbeddedResource = Extract<ModelContextContent, { type: "resource" }>;
 type DeliveryMode = "playback" | "file" | "both";
 type AppAudioMetadata = Pick<AudioContent, "data" | "mimeType">;
 type PlaybackState =
@@ -44,7 +47,7 @@ const DEFAULT_MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES = 8 * 1024 * 1024;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 const app = new App(
-  { name: "VoxBridge Audio Delivery", version: "0.3.1" },
+  { name: "VoxBridge Audio Delivery", version: "0.3.2" },
   { availableDisplayModes: ["inline"] },
   { autoResize: true },
 );
@@ -80,9 +83,11 @@ let isConnected = false;
 let hostCanDownload = false;
 let hostCanReadResources = false;
 let hostCanCallTools = false;
+let hostCanAttachToChatGpt = false;
 let isDownloading = false;
 let isMaterializingForChatGpt = false;
 let materializedForChatGpt = false;
+let modelContextResourceUri: string | undefined;
 let cachedFileResourceUri: string | undefined;
 let cachedFileBase64: string | undefined;
 let cachedFileBytes: ArrayBuffer | undefined;
@@ -90,6 +95,8 @@ let cachedFileMimeType: string | undefined;
 let currentMetadata: SpeechMetadata = {};
 let latestResult: ToolResult | undefined;
 let resultRevision = 0;
+let modelContextUpdateSequence = 0;
+let modelContextUpdateQueue: Promise<void> = Promise.resolve();
 let playbackRevision = 0;
 let playbackResource: ResourceLink | undefined;
 let playbackBytes: ArrayBuffer | undefined;
@@ -144,11 +151,74 @@ function setMaterializingForChatGpt(value: boolean) {
 function resetFileHandoff() {
   isMaterializingForChatGpt = false;
   materializedForChatGpt = false;
+  modelContextResourceUri = undefined;
   cachedFileResourceUri = undefined;
   cachedFileBase64 = undefined;
   cachedFileBytes = undefined;
   cachedFileMimeType = undefined;
   refreshChatGptButton();
+}
+
+function scheduleModelContextUpdate(content: ModelContextContent[], sequence: number) {
+  const operation = modelContextUpdateQueue.then(async () => {
+    if (sequence !== modelContextUpdateSequence) return;
+    await app.updateModelContext({ content });
+  });
+  modelContextUpdateQueue = operation.catch(() => undefined);
+  return operation;
+}
+
+function invalidateChatGptAttachment(clearAttached: boolean) {
+  if (!isMaterializingForChatGpt && !materializedForChatGpt) return;
+  const shouldClear =
+    hostCanAttachToChatGpt &&
+    (isMaterializingForChatGpt || (clearAttached && materializedForChatGpt));
+  const sequence = ++modelContextUpdateSequence;
+  if (shouldClear) {
+    void scheduleModelContextUpdate([], sequence);
+  }
+}
+
+function syncChatGptAttachmentFromHostContext(value: unknown, announceRemoval: boolean) {
+  const hostContext = asRecord(value);
+  if (
+    !hostContext ||
+    !Object.prototype.hasOwnProperty.call(hostContext, "openai/modelContext")
+  ) {
+    return;
+  }
+
+  const state = hostContext["openai/modelContext"];
+  let attached: boolean | undefined;
+  if (state === null) {
+    attached = false;
+  } else {
+    const content = asRecord(state)?.content;
+    if (Array.isArray(content) && currentResource) {
+      const expectedUri =
+        modelContextResourceUri ?? `file:///${encodeURIComponent(currentResource.name)}`;
+      attached = content.some((candidate) => {
+        const block = asRecord(candidate);
+        const resource = asRecord(block?.resource);
+        return block?.type === "resource" && resource?.uri === expectedUri;
+      });
+    }
+  }
+  if (attached === undefined || attached === materializedForChatGpt) return;
+
+  const wasAttached = materializedForChatGpt;
+  materializedForChatGpt = attached;
+  updateFileActions(currentResource);
+  if (attached) {
+    setStatus(
+      "The exact audio file is attached to ChatGPT's composer. Send your next message to share it with the model.",
+      "success",
+    );
+  } else if (wasAttached && announceRemoval && currentResource) {
+    setStatus(
+      "The composer no longer contains this audio file. Choose Add file to ChatGPT to attach it again without regenerating speech.",
+    );
+  }
 }
 
 function canChatGptHandoff(
@@ -166,6 +236,7 @@ function canChatGptHandoff(
   return Boolean(
     resource &&
     hostCanCallTools &&
+    hostCanAttachToChatGpt &&
     (handoffSize === undefined || handoffSize <= handoffLimit),
   );
 }
@@ -251,7 +322,9 @@ async function verifyFileBytes(
   if (!/^[a-f0-9]{64}$/.test(expectedDigest)) {
     throw new Error("Generated audio has invalid integrity metadata");
   }
-  if (!globalThis.crypto?.subtle) return;
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("This host cannot verify the generated audio integrity metadata");
+  }
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes.slice(0));
   const actualDigest = Array.from(new Uint8Array(digest), (value) =>
     value.toString(16).padStart(2, "0"),
@@ -828,12 +901,18 @@ function findMaterializedAudio(value: unknown) {
       const resource = asRecord(record.resource);
       const blob = resource?.blob;
       const mimeType = resource?.mimeType;
+      const uri = resource?.uri;
       if (
         typeof blob === "string" &&
         typeof mimeType === "string" &&
+        typeof uri === "string" &&
         mimeType.toLowerCase().startsWith("audio/")
       ) {
-        return { data: blob, mimeType };
+        return {
+          content: candidate as EmbeddedResource,
+          data: blob,
+          mimeType,
+        };
       }
     }
 
@@ -871,12 +950,16 @@ async function addCurrentFileToChatGpt() {
     setStatus("This host cannot call the audio materialization tool from the App.", "error");
     return;
   }
+  if (!hostCanAttachToChatGpt) {
+    setStatus("This ChatGPT host cannot add audio files to the message composer.", "error");
+    return;
+  }
 
   const resource = currentResource;
   const metadata = currentMetadata;
   const revision = resultRevision;
   setMaterializingForChatGpt(true);
-  setStatus("Asking ChatGPT to add the exact generated audio file…");
+  setStatus("Preparing the exact generated audio file for ChatGPT…");
   try {
     const result = await app.callServerTool({
       name: "materialize_audio_file",
@@ -895,17 +978,25 @@ async function addCurrentFileToChatGpt() {
     await verifyFileBytes(bytes, resource, metadata);
     if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
 
+    const modelContextSequence = ++modelContextUpdateSequence;
+    modelContextResourceUri = String(audio.content.resource.uri);
+    await scheduleModelContextUpdate([audio.content], modelContextSequence);
+    if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
+
     cachedFileResourceUri = resource.uri;
     cachedFileBase64 = audio.data;
     cachedFileBytes = bytes;
     cachedFileMimeType = audio.mimeType;
     materializedForChatGpt = true;
     setStatus(
-      "ChatGPT received the exact generated audio file. No regeneration occurred.",
+      "Added the exact audio file to ChatGPT's composer. Send your next message to share it with the model. No regeneration occurred.",
       "success",
     );
   } catch (error) {
     if (revision !== resultRevision || currentResource?.uri !== resource.uri) return;
+    materializedForChatGpt = false;
+    modelContextResourceUri = undefined;
+    updateFileActions(currentResource);
     recordMaterializeFailure(error);
     setStatus(
       "ChatGPT did not add the file. If the temporary VoxBridge file is still valid, retry without regenerating it; use Download when offered.",
@@ -935,6 +1026,7 @@ app.addEventListener("toolinput", (params) => {
   if (requested === "playback" || requested === "file" || requested === "both") {
     mode.textContent = modeLabel(requested);
   }
+  invalidateChatGptAttachment(true);
   resultRevision += 1;
   latestResult = undefined;
   currentResource = undefined;
@@ -947,9 +1039,14 @@ app.addEventListener("toolinput", (params) => {
   setStatus("Waiting for the speech provider.");
 });
 
-app.addEventListener("toolresult", renderResult);
+app.addEventListener("toolresult", (result) => {
+  invalidateChatGptAttachment(true);
+  renderResult(result);
+  syncChatGptAttachmentFromHostContext(app.getHostContext(), false);
+});
 
 app.addEventListener("toolcancelled", (params) => {
+  invalidateChatGptAttachment(true);
   resultRevision += 1;
   latestResult = undefined;
   currentResource = undefined;
@@ -962,7 +1059,12 @@ app.addEventListener("toolcancelled", (params) => {
   setStatus(params.reason ? `Cancelled: ${params.reason}` : "Cancelled.");
 });
 
+app.addEventListener("hostcontextchanged", (params) => {
+  syncChatGptAttachmentFromHostContext(params, true);
+});
+
 app.onteardown = () => {
+  invalidateChatGptAttachment(false);
   resultRevision += 1;
   currentResource = undefined;
   currentMetadata = {};
@@ -972,6 +1074,7 @@ app.onteardown = () => {
 };
 
 window.addEventListener("pagehide", () => {
+  invalidateChatGptAttachment(false);
   resultRevision += 1;
   currentResource = undefined;
   currentMetadata = {};
@@ -986,12 +1089,18 @@ try {
   hostCanDownload = hostCapabilities?.downloadFile !== undefined;
   hostCanReadResources = hostCapabilities?.serverResources !== undefined;
   hostCanCallTools = hostCapabilities?.serverTools !== undefined;
+  const hasChatGptComposerSemantics =
+    hostCapabilities?.experimental?.["openai/modelContext"] !== undefined;
+  hostCanAttachToChatGpt = Boolean(
+    hasChatGptComposerSemantics && hostCapabilities?.updateModelContext?.resource !== undefined,
+  );
   setMaterializingForChatGpt(false);
   downloadButton.disabled = !hostCanDownload;
   downloadButton.hidden = !hostCanDownload;
   saveChatGptButton.hidden = true;
   if (latestResult) {
     renderResult(latestResult);
+    syncChatGptAttachmentFromHostContext(app.getHostContext(), false);
   } else {
     setStatus(
       hostCanDownload

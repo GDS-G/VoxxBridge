@@ -820,6 +820,7 @@ def test_materialize_audio_file_returns_embedded_bytes_and_metadata():
     assert output.structured_content == metadata
     embedded = output.content[1]
     assert isinstance(embedded, EmbeddedResource)
+    assert embedded.annotations is None
     assert str(embedded.resource.uri) == f"file:///voxbridge-{'1' * 32}.mp3"
     assert embedded.resource.mime_type == "audio/mpeg"
     assert base64.b64decode(embedded.resource.blob) == b"materialized-audio"
@@ -1133,15 +1134,17 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert materialize_output_schema["properties"]["materialized"]["const"] is True
     assert materialize_output_schema["properties"]["file_size_bytes"]["minimum"] == 1
     assert materialize_output_schema["properties"]["sha256"]["pattern"] == "^[a-f0-9]{64}$"
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v11.html"
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v12.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     assert by_name["generate_dialogue"].meta == generate_meta
     materialize_meta = by_name["materialize_audio_file"].meta
     assert materialize_meta["ui"]["visibility"] == ["model", "app"]
     assert materialize_meta["openai/widgetAccessible"] is True
-    assert materialize_meta["openai/toolInvocation/invoking"] == ("Adding audio file to ChatGPT…")
-    assert materialize_meta["openai/toolInvocation/invoked"] == ("Audio file added to ChatGPT")
+    assert materialize_meta["openai/toolInvocation/invoking"] == (
+        "Preparing exact audio attachment…"
+    )
+    assert materialize_meta["openai/toolInvocation/invoked"] == ("Audio attachment prepared")
     if mode == "legacy":
         assert protocol_version in HANDSHAKE_PROTOCOL_VERSIONS
     else:
@@ -1178,10 +1181,17 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert "downloadFile" in document.text
     assert "callServerTool" in document.text
     assert "serverTools" in document.text
+    assert "updateModelContext" in document.text
+    assert "openai/modelContext" in document.text
+    assert "hostcontextchanged" in document.text
     assert "materialize_audio_file" in document.text
     assert "Add file to ChatGPT" in document.text
     assert "Adding file to ChatGPT" in document.text
     assert "VB-HANDOFF-MATERIALIZE" in document.text
+    assert "Added the exact audio file to ChatGPT's composer" in document.text
+    assert "The composer no longer contains this audio file" in document.text
+    assert "cannot verify the generated audio integrity metadata" in document.text
+    assert "ChatGPT received the exact generated audio file" not in document.text
     assert "uploadFile" not in document.text
     assert "Prepare for ChatGPT" not in document.text
     assert "Save to ChatGPT" not in document.text

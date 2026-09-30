@@ -50,7 +50,7 @@ from voxbridge.providers.base import ProviderError
 from voxbridge.registry import REGISTRY, close_registry
 from voxbridge.replay_cache import ReplayCache, ReplayCacheCapacityError
 
-_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v11.html"
+_AUDIO_DELIVERY_UI_URI = "ui://voxbridge/audio-delivery-v12.html"
 _AUDIO_DELIVERY_UI_HTML = (
     files("voxbridge").joinpath("ui").joinpath("audio-delivery-v1.html").read_text(encoding="utf-8")
 )
@@ -846,12 +846,12 @@ async def generate_dialogue(
 
 
 @mcp.tool(
-    title="Add generated audio file to ChatGPT",
+    title="Prepare generated audio attachment",
     meta={
         "ui": {"visibility": ["model", "app"]},
         "openai/widgetAccessible": True,
-        "openai/toolInvocation/invoking": "Adding audio file to ChatGPT…",
-        "openai/toolInvocation/invoked": "Audio file added to ChatGPT",
+        "openai/toolInvocation/invoking": "Preparing exact audio attachment…",
+        "openai/toolInvocation/invoked": "Audio attachment prepared",
     },
     annotations=ToolAnnotations(
         readOnlyHint=True,
@@ -892,10 +892,12 @@ def materialize_audio_file(
     generate_speech or generate_dialogue; if the host hides that custom URI, use the
     exact generated `file_name`. The longer `resource_uri` is retained as a
     backward-compatible input. Call this only when an MCP client or compatible
-    downstream tool explicitly accepts embedded resources. A compatible ChatGPT host can
-    register the returned resource as a file attachment after any approval it requests,
-    but other hosts may present it differently. The ordinary ResourceLink remains the
-    efficient download path; this bounded, opt-in result avoids embedding every audio file.
+    downstream tool explicitly accepts embedded resources. This tool only returns the
+    embedded resource; an MCP App must separately pass it through
+    `ui/update-model-context` before a compatible ChatGPT host adds it to the message
+    composer. Other hosts may present it differently. The ordinary ResourceLink remains
+    the efficient download path; this bounded, opt-in result avoids embedding every audio
+    file.
     """
 
     if (resource_uri is None) == (file_name is None):
