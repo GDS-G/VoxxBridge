@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voxbridge-gateway"
-version = "0.3.0"
-description = "Provider-neutral MCP gateway for realistic voice generation."
+version = "0.4.0"
+description = "Provider-neutral MCP gateway for realistic speech and music generation."
 requires-python = ">=3.11"
 dependencies = [
   "google-auth[requests]==2.59.0",

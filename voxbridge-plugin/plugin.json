@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "voxbridge",
-  "version": "0.3.5",
-  "description": "Generate single- or multi-voice AI speech for playback, file download, or both through one provider-neutral ChatGPT workflow.",
+  "version": "0.4.0",
+  "description": "Generate single- or multi-voice AI speech and ElevenLabs music for playback, file download, or both through one ChatGPT workflow.",
   "author": {"name": "VoxBridge"},
   "keywords": [],
   "extensions": {
@@ -10,8 +10,8 @@
       "apps": "./.app.json",
       "interface": {
         "displayName": "VoxBridge",
-        "shortDescription": "Multi-voice AI audio files",
-        "longDescription": "Use a provider-neutral workflow to generate realistic AI speech for immediate playback, an explicit file download, or both across ElevenLabs, Hume, Cartesia, Resemble AI, OpenAI, Deepgram, Google Cloud Text-to-Speech, and Microsoft Azure Speech. Build one ordered WAV from several voice IDs or synthesize a single voice while VoxBridge handles provider-specific controls.",
+        "shortDescription": "AI voice and music files",
+        "longDescription": "Generate realistic AI speech across eight providers or create original ElevenLabs music, with immediate playback, an explicit file download, or both. Build one ordered WAV from several voice IDs, synthesize a single voice, or create a downloadable MP3 music track while VoxBridge handles supported provider controls.",
         "developerName": "VoxBridge",
         "category": "Productivity",
         "capabilities": ["Interactive"],

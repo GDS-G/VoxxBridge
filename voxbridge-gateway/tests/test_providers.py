@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, call
 import httpx
 import pytest
 
-from voxbridge.models import SpeechRequest
+from voxbridge.models import MusicRequest, SpeechRequest
 from voxbridge.providers.azure_speech import AzureSpeechProvider
 from voxbridge.providers.base import ProviderError
 from voxbridge.providers.cartesia import CartesiaProvider
@@ -117,6 +117,302 @@ async def test_elevenlabs_voice_and_synthesis_contracts():
     assert result.model == "model-1"
     assert result.request_id == "eleven-request"
     assert result.metadata == {"character_cost": "7"}
+
+
+async def test_elevenlabs_music_prompt_contract_and_result_metadata():
+    provider = ElevenLabsProvider(
+        "eleven-secret",
+        music_timeout=123.0,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url == httpx.URL("https://api.elevenlabs.io/v1/music?output_format=auto")
+        assert request.headers["xi-api-key"] == "eleven-secret"
+        assert request.headers["content-type"] == "application/json"
+        assert body(request) == {
+            "model_id": "music_v2_5",
+            "sign_with_c2pa": True,
+            "prompt": "A bright three-second ident with a clean ending",
+            "music_length_ms": 3_000,
+            "force_instrumental": True,
+            "finetune_id": "brand-finetune",
+        }
+        assert request.extensions["timeout"] == {
+            "connect": 123.0,
+            "read": 123.0,
+            "write": 123.0,
+            "pool": 123.0,
+        }
+        return httpx.Response(
+            200,
+            content=b"ID3-eleven-music",
+            headers={
+                "content-type": "audio/mpeg; charset=binary",
+                "request-id": "music-request-1",
+                "song-id": "song-1",
+            },
+        )
+
+    await install_transport(provider, handler)
+    try:
+        result = await provider.generate_music(
+            MusicRequest(
+                prompt="A bright three-second ident with a clean ending",
+                music_length_ms=3_000,
+                model="music_v2_5",
+                force_instrumental=True,
+                finetune_id="  brand-finetune  ",
+                sign_with_c2pa=True,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert result.audio == b"ID3-eleven-music"
+    assert result.mime_type == "audio/mpeg"
+    assert result.provider == "elevenlabs"
+    assert result.model == "music_v2_5"
+    assert result.request_id == "music-request-1"
+    assert result.metadata == {
+        "music": True,
+        "music_mode": "prompt",
+        "music_length_ms": 3_000,
+        "force_instrumental": True,
+        "song_id": "song-1",
+    }
+
+
+async def test_elevenlabs_music_composition_plan_contract():
+    provider = ElevenLabsProvider("eleven-secret")
+    plan = {
+        "positive_global_styles": ["cinematic", "warm"],
+        "negative_global_styles": ["vocals"],
+        "sections": [
+            {
+                "section_name": "Intro",
+                "positive_local_styles": ["piano"],
+                "negative_local_styles": [],
+                "duration_ms": 3_000,
+                "lines": [],
+            }
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url == httpx.URL("https://api.elevenlabs.io/v1/music?output_format=auto")
+        assert request.headers["xi-api-key"] == "eleven-secret"
+        assert request.headers["content-type"] == "application/json"
+        assert body(request) == {
+            "model_id": "music_v2",
+            "sign_with_c2pa": False,
+            "composition_plan": plan,
+            "respect_sections_durations": False,
+            "seed": 2_147_483_647,
+            "finetune_id": "plan-finetune",
+        }
+        return httpx.Response(
+            200,
+            content=b"ID3-planned-music",
+            headers={"content-type": "application/octet-stream"},
+        )
+
+    await install_transport(provider, handler)
+    try:
+        result = await provider.generate_music(
+            MusicRequest(
+                composition_plan=plan,
+                model="music_v2",
+                seed=2_147_483_647,
+                finetune_id="plan-finetune",
+                respect_sections_durations=False,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert result.audio == b"ID3-planned-music"
+    assert result.mime_type == "audio/mpeg"
+    assert result.model == "music_v2"
+    assert result.request_id is None
+    assert result.metadata == {
+        "music": True,
+        "music_mode": "composition_plan",
+        "music_length_ms": None,
+        "force_instrumental": None,
+        "song_id": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("music_request", "message"),
+    [
+        (
+            MusicRequest(),
+            "ElevenLabs music requires exactly one of prompt or composition_plan",
+        ),
+        (
+            MusicRequest(prompt="Song", composition_plan={"sections": []}),
+            "ElevenLabs music requires exactly one of prompt or composition_plan",
+        ),
+        (
+            MusicRequest(prompt="   "),
+            "ElevenLabs music prompt cannot be empty",
+        ),
+        (
+            MusicRequest(prompt="x" * 4_101),
+            "ElevenLabs music prompt accepts at most 4,100 characters",
+        ),
+        (
+            MusicRequest(composition_plan={}),
+            "ElevenLabs composition_plan must be a non-empty object",
+        ),
+        (
+            MusicRequest(composition_plan=[{"sections": []}]),
+            "ElevenLabs composition_plan must be a non-empty object",
+        ),
+        (
+            MusicRequest(prompt="Song", model="music_v3"),
+            "ElevenLabs music model must be music_v1, music_v2, or music_v2_5",
+        ),
+        (
+            MusicRequest(prompt="Song", output_format="wav"),
+            "ElevenLabs music output must be mp3",
+        ),
+        (
+            MusicRequest(prompt="Song", music_length_ms=True),
+            "ElevenLabs music_length_ms must be an integer",
+        ),
+        (
+            MusicRequest(prompt="Song", music_length_ms=2_999),
+            "ElevenLabs music_length_ms must be between 3000 and 600000",
+        ),
+        (
+            MusicRequest(prompt="Song", music_length_ms=600_001),
+            "ElevenLabs music_length_ms must be between 3000 and 600000",
+        ),
+        (
+            MusicRequest(
+                composition_plan={"sections": []},
+                music_length_ms=3_000,
+            ),
+            "ElevenLabs music_length_ms can only be used with a prompt",
+        ),
+        (
+            MusicRequest(prompt="Song", force_instrumental="yes"),
+            "ElevenLabs force_instrumental must be a boolean",
+        ),
+        (
+            MusicRequest(
+                composition_plan={"sections": []},
+                force_instrumental=True,
+            ),
+            "ElevenLabs force_instrumental can only be used with a prompt",
+        ),
+        (
+            MusicRequest(composition_plan={"sections": []}, seed=True),
+            "ElevenLabs music seed must be an integer",
+        ),
+        (
+            MusicRequest(composition_plan={"sections": []}, seed=-1),
+            "ElevenLabs music seed must be between 0 and 2147483647",
+        ),
+        (
+            MusicRequest(
+                composition_plan={"sections": []},
+                seed=2_147_483_648,
+            ),
+            "ElevenLabs music seed must be between 0 and 2147483647",
+        ),
+        (
+            MusicRequest(prompt="Song", seed=1),
+            "ElevenLabs music seed cannot be used with a prompt",
+        ),
+        (
+            MusicRequest(prompt="Song", finetune_id=""),
+            "ElevenLabs music finetune_id must contain 1 to 100 characters",
+        ),
+        (
+            MusicRequest(prompt="Song", finetune_id="x" * 101),
+            "ElevenLabs music finetune_id must contain 1 to 100 characters",
+        ),
+        (
+            MusicRequest(prompt="Song", respect_sections_durations=1),
+            "ElevenLabs respect_sections_durations must be a boolean",
+        ),
+        (
+            MusicRequest(prompt="Song", sign_with_c2pa=1),
+            "ElevenLabs sign_with_c2pa must be a boolean",
+        ),
+    ],
+)
+async def test_elevenlabs_music_rejects_invalid_requests_before_http(music_request, message):
+    provider = ElevenLabsProvider("key")
+    try:
+        with pytest.raises(ProviderError, match=message):
+            await provider.generate_music(music_request)
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    "music_request",
+    [
+        MusicRequest(prompt="x" * 4_100, music_length_ms=3_000),
+        MusicRequest(prompt="Song", music_length_ms=600_000, finetune_id="x" * 100),
+        MusicRequest(composition_plan={"sections": []}, seed=0),
+        MusicRequest(composition_plan={"sections": []}, seed=2_147_483_647),
+    ],
+)
+async def test_elevenlabs_music_accepts_documented_boundaries(music_request):
+    provider = ElevenLabsProvider("key")
+    try:
+        provider.validate_music_request(music_request)
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "message"),
+    [
+        (
+            403,
+            "ElevenLabs rejected its credentials or Music API entitlement",
+        ),
+        (
+            422,
+            "ElevenLabs rejected the music prompt, composition plan, or settings",
+        ),
+    ],
+)
+async def test_elevenlabs_music_returns_safe_provider_errors(status_code, message):
+    provider = ElevenLabsProvider("do-not-leak-api-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            json={
+                "detail": "sensitive upstream diagnostic",
+                "api_key": "do-not-leak-api-key",
+            },
+            headers={"request-id": "music-error-request"},
+        )
+
+    await install_transport(provider, handler)
+    try:
+        with pytest.raises(ProviderError) as exc_info:
+            await provider.generate_music(MusicRequest(prompt="Safe test"))
+    finally:
+        await provider.aclose()
+
+    error = exc_info.value
+    assert str(error) == message
+    assert error.status_code == status_code
+    assert error.request_id == "music-error-request"
+    assert error.retryable is False
+    assert "sensitive upstream diagnostic" not in str(error)
+    assert "do-not-leak-api-key" not in str(error)
 
 
 async def test_hume_voice_and_synthesis_contracts():

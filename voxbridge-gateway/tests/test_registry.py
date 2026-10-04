@@ -4,7 +4,7 @@ from voxbridge.registry import REGISTRY, build_registry, close_registry
 
 EXPECTED_PROVIDERS = {
     "elevenlabs": {
-        "capabilities": {"text_to_speech", "list_voices"},
+        "capabilities": {"text_to_speech", "list_voices", "music_generation"},
         "formats": {"mp3", "wav"},
         "max_text_chars": 5_000,
         "instructions": False,
@@ -12,6 +12,11 @@ EXPECTED_PROVIDERS = {
         "model": True,
         "speed": True,
         "speed_range": [0.7, 1.2],
+        "music_model": "music_v2_5",
+        "music_models": ["music_v1", "music_v2", "music_v2_5"],
+        "music_formats": ["mp3"],
+        "music_duration_range_ms": [3_000, 600_000],
+        "music_plans": True,
     },
     "hume": {
         "capabilities": {"text_to_speech", "list_voices", "acting_instructions"},
@@ -124,6 +129,19 @@ def test_provider_capabilities_and_limits_are_truthful():
         assert info["supports_speed"] is expected["speed"]
         assert info["speed_range"] == expected["speed_range"]
         assert info["allowed_options"] == sorted(provider.allowed_options)
+
+        if provider_id == "elevenlabs":
+            assert info["default_music_model"] == expected["music_model"]
+            assert info["music_models"] == expected["music_models"]
+            assert info["music_supported_formats"] == expected["music_formats"]
+            assert info["music_duration_range_ms"] == expected["music_duration_range_ms"]
+            assert info["supports_music_composition_plans"] is expected["music_plans"]
+        else:
+            assert info["default_music_model"] is None
+            assert info["music_models"] == []
+            assert info["music_supported_formats"] == []
+            assert info["music_duration_range_ms"] is None
+            assert info["supports_music_composition_plans"] is False
 
 
 def test_advertised_list_voices_capability_has_an_implementation():

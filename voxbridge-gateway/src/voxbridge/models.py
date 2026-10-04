@@ -31,6 +31,20 @@ class SpeechRequest:
 
 
 @dataclass(slots=True)
+class MusicRequest:
+    prompt: str | None = None
+    composition_plan: dict[str, Any] | None = None
+    music_length_ms: int | None = None
+    model: str = "music_v2_5"
+    output_format: str = "mp3"
+    seed: int | None = None
+    force_instrumental: bool = False
+    finetune_id: str | None = None
+    respect_sections_durations: bool = True
+    sign_with_c2pa: bool = False
+
+
+@dataclass(slots=True)
 class SpeechResult:
     audio: bytes
     mime_type: str

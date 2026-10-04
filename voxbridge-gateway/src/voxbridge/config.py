@@ -39,6 +39,7 @@ class Settings(BaseSettings):
         le=512 * 1024 * 1024,
     )
     voxbridge_request_timeout_seconds: float = Field(default=60.0, gt=0, le=300.0)
+    voxbridge_music_request_timeout_seconds: float = Field(default=300.0, gt=0, le=600.0)
     voxbridge_allowed_hosts: list[str] = Field(
         default_factory=lambda: ["127.0.0.1:*", "localhost:*", "[::1]:*"]
     )

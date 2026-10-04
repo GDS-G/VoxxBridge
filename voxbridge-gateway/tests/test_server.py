@@ -75,6 +75,32 @@ class FakeProvider:
         self.closed = True
 
 
+class MusicProvider(FakeProvider):
+    id = "fake-music"
+    display_name = "Fake Music"
+    capabilities = ("music_generation",)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.music_result = SpeechResult(
+            audio=b"fake-music-audio",
+            mime_type="audio/mpeg",
+            provider=self.id,
+            model="music_v2_5",
+            request_id="fake-music-request",
+            metadata={"song_id": "fake-song-id", "music_length_ms": 30_000},
+        )
+        self.validated_music = []
+        self.generated_music = []
+
+    def validate_music_request(self, request) -> None:
+        self.validated_music.append(request)
+
+    async def generate_music(self, request) -> SpeechResult:
+        self.generated_music.append(request)
+        return self.music_result
+
+
 class FailingProvider(FakeProvider):
     def __init__(self, message="safe provider failure") -> None:
         super().__init__()
@@ -472,6 +498,181 @@ async def test_delivery_selects_playback_file_or_both(
         assert "materialize_resource_uri" not in metadata
         assert "materialize_max_bytes" not in metadata
         assert "download_expires_at" not in metadata
+
+
+async def test_generate_music_routes_structured_plan_and_returns_delivery_metadata(
+    monkeypatch,
+):
+    provider = MusicProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    output = await server.generate_music(
+        provider=" FAKE-MUSIC ",
+        composition_plan_json=(
+            '{"sections":[{"section_name":"Intro","duration_ms":3000}],'
+            '"positive_global_styles":["ambient"]}'
+        ),
+        model="music_v2_5",
+        output_format="mp3",
+        seed=42,
+        finetune_id="studio-mix",
+        respect_sections_durations=False,
+        sign_with_c2pa=True,
+        delivery="both",
+    )
+
+    assert len(provider.validated_music) == 1
+    assert provider.generated_music == provider.validated_music
+    request = provider.generated_music[0]
+    assert request.prompt is None
+    assert request.composition_plan == {
+        "sections": [{"section_name": "Intro", "duration_ms": 3_000}],
+        "positive_global_styles": ["ambient"],
+    }
+    assert request.music_length_ms is None
+    assert request.model == "music_v2_5"
+    assert request.output_format == "mp3"
+    assert request.seed == 42
+    assert request.force_instrumental is False
+    assert request.finetune_id == "studio-mix"
+    assert request.respect_sections_durations is False
+    assert request.sign_with_c2pa is True
+
+    metadata = json.loads(output.content[0].text)
+    assert [item.type for item in output.content] == ["text", "resource_link"]
+    assert metadata["synthetic_audio"] is True
+    assert metadata["audio_kind"] == "music"
+    assert metadata["provider"] == "fake-music"
+    assert metadata["model"] == "music_v2_5"
+    assert metadata["request_id"] == "fake-music-request"
+    assert metadata["song_id"] == "fake-song-id"
+    assert metadata["delivery"] == "both"
+    assert metadata["file_mime_type"] == "audio/mpeg"
+    assert metadata["file_size_bytes"] == len(b"fake-music-audio")
+    assert re.fullmatch(r"voxbridge-[0-9a-f]{32}\.mp3", metadata["file_name"])
+    assert isinstance(output.content[1], ResourceLink)
+    assert output.content[1].uri == metadata["resource_uri"]
+    assert output.meta == {
+        "voxbridge/audio": {
+            "data": base64.b64encode(b"fake-music-audio").decode("ascii"),
+            "mimeType": "audio/mpeg",
+        }
+    }
+
+
+async def test_generate_music_reuses_omitted_and_explicit_default_duration(monkeypatch):
+    provider = MusicProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    first = await server.generate_music(
+        prompt="A three-second ambient ident",
+        provider=provider.id,
+        delivery="file",
+    )
+    replay = await server.generate_music(
+        prompt="A three-second ambient ident",
+        music_length_ms=30_000,
+        provider=provider.id,
+        delivery="file",
+    )
+
+    assert replay is first
+    assert len(provider.generated_music) == 1
+    assert provider.generated_music[0].music_length_ms == 30_000
+
+
+@pytest.mark.parametrize(
+    ("delivery", "content_types", "has_file", "has_app_audio"),
+    [
+        ("playback", ["text", "audio"], False, False),
+        ("file", ["text", "resource_link"], True, False),
+        ("both", ["text", "resource_link"], True, True),
+    ],
+)
+async def test_generate_music_supports_all_delivery_modes(
+    monkeypatch,
+    delivery,
+    content_types,
+    has_file,
+    has_app_audio,
+):
+    provider = MusicProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    output = await server.generate_music(
+        prompt="A compact synth sting",
+        music_length_ms=3_000,
+        provider=provider.id,
+        delivery=delivery,
+    )
+
+    metadata = json.loads(output.content[0].text)
+    assert [item.type for item in output.content] == content_types
+    assert metadata["audio_kind"] == "music"
+    assert metadata["delivery"] == delivery
+    assert metadata["file_resource_included"] is has_file
+    assert (output.meta is not None) is has_app_audio
+    assert server._audio_artifacts.item_count == int(has_file)
+
+
+async def test_generate_music_rejects_bad_plan_and_non_music_provider_before_calls(
+    monkeypatch,
+):
+    music_provider = MusicProvider()
+    speech_provider = FakeProvider()
+    monkeypatch.setattr(
+        server,
+        "REGISTRY",
+        {music_provider.id: music_provider, speech_provider.id: speech_provider},
+    )
+
+    with pytest.raises(ToolError, match="composition_plan_json must contain valid JSON"):
+        await server.generate_music(
+            composition_plan_json="{not-json}",
+            provider=music_provider.id,
+        )
+
+    with pytest.raises(ToolError, match="Fake Voice does not support music generation"):
+        await server.generate_music(
+            prompt="A short cue",
+            provider=speech_provider.id,
+        )
+
+    with pytest.raises(ToolError, match="Unknown provider 'missing'"):
+        await server.generate_music(prompt="A short cue", provider="missing")
+
+    assert music_provider.validated_music == []
+    assert music_provider.generated_music == []
+    assert speech_provider.validated == []
+    assert speech_provider.generated == []
+
+
+async def test_generate_music_reports_delivery_failure_without_storing_file(monkeypatch):
+    provider = MusicProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    def fail_delivery(*_args, **_kwargs):
+        raise ToolError("delivery backend failed")
+
+    monkeypatch.setattr(server, "_build_delivery_result", fail_delivery)
+
+    with pytest.raises(
+        ToolError,
+        match=(
+            "Music generation completed, but final delivery failed.*"
+            "Provider charges may already apply; no music file was stored.*"
+            "delivery backend failed"
+        ),
+    ):
+        await server.generate_music(
+            prompt="A compact synth sting",
+            music_length_ms=3_000,
+            provider=provider.id,
+            delivery="file",
+        )
+
+    assert len(provider.generated_music) == 1
+    assert server._audio_artifacts.item_count == 0
 
 
 async def test_generate_dialogue_preserves_voice_order_controls_and_pauses(monkeypatch):
@@ -1062,6 +1263,7 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
         "list_voices",
         "generate_speech",
         "generate_dialogue",
+        "generate_music",
         "materialize_audio_file",
     }
     by_name = {tool.name: tool for tool in result.tools}
@@ -1069,6 +1271,8 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert by_name["list_voices"].annotations.read_only_hint is True
     assert by_name["generate_speech"].annotations.read_only_hint is False
     assert by_name["generate_dialogue"].annotations.read_only_hint is False
+    assert by_name["generate_music"].annotations.read_only_hint is False
+    assert by_name["generate_music"].annotations.open_world_hint is True
     assert by_name["materialize_audio_file"].annotations.read_only_hint is True
     assert by_name["materialize_audio_file"].annotations.open_world_hint is False
     assert set(by_name["generate_speech"].input_schema["required"]) == {"provider", "text"}
@@ -1109,6 +1313,45 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert set(segment_schema["required"]) == {"text", "voice_id"}
     assert segment_schema["properties"]["pause_after_ms"]["default"] == 250
     assert by_name["generate_dialogue"].output_schema == delivery_output_schema
+    music_schema = by_name["generate_music"].input_schema
+    assert "ctx" not in music_schema["properties"]
+    assert "required" not in music_schema
+    assert music_schema["properties"]["provider"]["default"] == "elevenlabs"
+    assert music_schema["properties"]["model"]["default"] == "music_v2_5"
+    assert set(music_schema["properties"]["model"]["enum"]) == {
+        "music_v1",
+        "music_v2",
+        "music_v2_5",
+    }
+    assert music_schema["properties"]["output_format"]["const"] == "mp3"
+    assert music_schema["properties"]["output_format"]["default"] == "mp3"
+    assert music_schema["properties"]["force_instrumental"]["default"] is False
+    assert music_schema["properties"]["respect_sections_durations"]["default"] is True
+    assert music_schema["properties"]["sign_with_c2pa"]["default"] is False
+    assert music_schema["properties"]["delivery"]["default"] == "both"
+    assert set(music_schema["properties"]["delivery"]["enum"]) == {
+        "playback",
+        "file",
+        "both",
+    }
+    music_length_schema = music_schema["properties"]["music_length_ms"]
+    assert any(
+        option.get("minimum") == 3_000 and option.get("maximum") == 600_000
+        for option in music_length_schema["anyOf"]
+    )
+    seed_schema = music_schema["properties"]["seed"]
+    assert any(
+        option.get("minimum") == 0 and option.get("maximum") == 2_147_483_647
+        for option in seed_schema["anyOf"]
+    )
+    assert any(
+        option.get("maxLength") == 4_100 for option in music_schema["properties"]["prompt"]["anyOf"]
+    )
+    assert any(
+        option.get("maxLength") == 40_000
+        for option in music_schema["properties"]["composition_plan_json"]["anyOf"]
+    )
+    assert by_name["generate_music"].output_schema == delivery_output_schema
     assert "required" not in by_name["materialize_audio_file"].input_schema
     materialize_uri_schema = by_name["materialize_audio_file"].input_schema["properties"][
         "resource_uri"
@@ -1134,10 +1377,11 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert materialize_output_schema["properties"]["materialized"]["const"] is True
     assert materialize_output_schema["properties"]["file_size_bytes"]["minimum"] == 1
     assert materialize_output_schema["properties"]["sha256"]["pattern"] == "^[a-f0-9]{64}$"
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v12.html"
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v13.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     assert by_name["generate_dialogue"].meta == generate_meta
+    assert by_name["generate_music"].meta == generate_meta
     materialize_meta = by_name["materialize_audio_file"].meta
     assert materialize_meta["ui"]["visibility"] == ["model", "app"]
     assert materialize_meta["openai/widgetAccessible"] is True
@@ -1190,6 +1434,12 @@ async def test_mcp_audio_delivery_app_resource_is_discoverable(monkeypatch):
     assert "VB-HANDOFF-MATERIALIZE" in document.text
     assert "Added the exact audio file to ChatGPT's composer" in document.text
     assert "The composer no longer contains this audio file" in document.text
+    assert "without regenerating audio" in document.text
+    assert "The audio generation tool returned an error." in document.text
+    assert "Waiting for the audio provider." in document.text
+    assert "without regenerating speech" not in document.text
+    assert "The speech tool returned an error." not in document.text
+    assert "Waiting for the speech provider." not in document.text
     assert "cannot verify the generated audio integrity metadata" in document.text
     assert "ChatGPT received the exact generated audio file" not in document.text
     assert "uploadFile" not in document.text

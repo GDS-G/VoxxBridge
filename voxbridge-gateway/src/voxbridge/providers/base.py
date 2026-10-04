@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 import httpx
 
 from voxbridge import __version__
-from voxbridge.models import SpeechRequest, SpeechResult, Voice
+from voxbridge.models import MusicRequest, SpeechRequest, SpeechResult, Voice
 
 
 class ProviderError(RuntimeError):
@@ -42,6 +42,11 @@ class VoiceProvider(ABC):
     instructions_note: str | None = None
     control_notes: ClassVar[dict[str, str]] = {}
     base64_audio_response: bool = False
+    default_music_model: str | None = None
+    music_models: tuple[str, ...] = ()
+    music_supported_formats: tuple[str, ...] = ()
+    music_duration_range_ms: tuple[int, int] | None = None
+    supports_music_composition_plans: bool = False
 
     def __init__(
         self, *, timeout: float = 60.0, max_response_bytes: int = 20 * 1024 * 1024
@@ -64,6 +69,12 @@ class VoiceProvider(ABC):
 
     @abstractmethod
     async def generate(self, req: SpeechRequest) -> SpeechResult: ...
+
+    def validate_music_request(self, req: MusicRequest) -> None:
+        raise ProviderError(f"{self.display_name} does not support music generation")
+
+    async def generate_music(self, req: MusicRequest) -> SpeechResult:
+        raise ProviderError(f"{self.display_name} does not support music generation")
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -215,4 +226,11 @@ class VoiceProvider(ABC):
             "supports_speed": self.supports_speed,
             "speed_range": [self.min_speed, self.max_speed] if self.supports_speed else None,
             "allowed_options": sorted(self.allowed_options),
+            "default_music_model": self.default_music_model,
+            "music_models": list(self.music_models),
+            "music_supported_formats": list(self.music_supported_formats),
+            "music_duration_range_ms": list(self.music_duration_range_ms)
+            if self.music_duration_range_ms
+            else None,
+            "supports_music_composition_plans": self.supports_music_composition_plans,
         }

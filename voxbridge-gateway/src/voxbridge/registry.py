@@ -17,7 +17,9 @@ from voxbridge.providers.resemble import ResembleProvider
 def build_registry() -> dict[str, VoiceProvider]:
     providers = [
         ElevenLabsProvider(
-            settings.elevenlabs_api_key, timeout=settings.voxbridge_request_timeout_seconds
+            settings.elevenlabs_api_key,
+            timeout=settings.voxbridge_request_timeout_seconds,
+            music_timeout=settings.voxbridge_music_request_timeout_seconds,
         ),
         HumeProvider(settings.hume_api_key, timeout=settings.voxbridge_request_timeout_seconds),
         CartesiaProvider(

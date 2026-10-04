@@ -22,7 +22,7 @@ type PlaybackState =
   | "paused"
   | "ended";
 
-type SpeechMetadata = {
+type AudioMetadata = {
   app_resource_playback?: boolean;
   delivery?: DeliveryMode;
   download_expires_at?: string;
@@ -47,7 +47,7 @@ const DEFAULT_MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES = 8 * 1024 * 1024;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 const app = new App(
-  { name: "VoxBridge Audio Delivery", version: "0.3.2" },
+  { name: "VoxBridge Audio Delivery", version: "0.4.0" },
   { availableDisplayModes: ["inline"] },
   { autoResize: true },
 );
@@ -92,7 +92,7 @@ let cachedFileResourceUri: string | undefined;
 let cachedFileBase64: string | undefined;
 let cachedFileBytes: ArrayBuffer | undefined;
 let cachedFileMimeType: string | undefined;
-let currentMetadata: SpeechMetadata = {};
+let currentMetadata: AudioMetadata = {};
 let latestResult: ToolResult | undefined;
 let resultRevision = 0;
 let modelContextUpdateSequence = 0;
@@ -216,14 +216,14 @@ function syncChatGptAttachmentFromHostContext(value: unknown, announceRemoval: b
     );
   } else if (wasAttached && announceRemoval && currentResource) {
     setStatus(
-      "The composer no longer contains this audio file. Choose Add file to ChatGPT to attach it again without regenerating speech.",
+      "The composer no longer contains this audio file. Choose Add file to ChatGPT to attach it again without regenerating audio.",
     );
   }
 }
 
 function canChatGptHandoff(
   resource: ResourceLink | undefined,
-  metadata: SpeechMetadata = currentMetadata,
+  metadata: AudioMetadata = currentMetadata,
 ) {
   const handoffSize = resource?.size ?? metadata.file_size_bytes;
   const configuredLimit = metadata.materialize_max_bytes;
@@ -249,13 +249,13 @@ function updateFileActions(resource: ResourceLink | undefined) {
   actions.hidden = !resource || (!hostCanDownload && !canSaveToChatGpt);
 }
 
-function parseMetadata(content: ToolResult["content"]): SpeechMetadata {
+function parseMetadata(content: ToolResult["content"]): AudioMetadata {
   for (const item of content ?? []) {
     if (item.type !== "text") continue;
     try {
       const value: unknown = JSON.parse(item.text);
       if (value && typeof value === "object" && !Array.isArray(value)) {
-        return value as SpeechMetadata;
+        return value as AudioMetadata;
       }
     } catch {
       // A text block may be a human-readable message rather than metadata.
@@ -311,7 +311,7 @@ function base64DecodedByteLength(data: string) {
 async function verifyFileBytes(
   bytes: ArrayBuffer,
   resource: ResourceLink,
-  metadata: SpeechMetadata,
+  metadata: AudioMetadata,
 ) {
   const expectedSize = resource.size ?? metadata.file_size_bytes;
   if (expectedSize !== undefined && bytes.byteLength !== expectedSize) {
@@ -441,7 +441,7 @@ async function loadFileResource(resource: ResourceLink) {
 function verifyFileEnvelope(
   data: string,
   resource: ResourceLink,
-  metadata: SpeechMetadata,
+  metadata: AudioMetadata,
 ) {
   const expectedSize = resource.size ?? metadata.file_size_bytes;
   if (expectedSize !== undefined && base64DecodedByteLength(data) !== expectedSize) {
@@ -516,7 +516,7 @@ function preparePlayback(audio: Pick<AudioContent, "data" | "mimeType"> | undefi
   }
 }
 
-function deriveMode(metadata: SpeechMetadata, content: ToolResult["content"]): DeliveryMode {
+function deriveMode(metadata: AudioMetadata, content: ToolResult["content"]): DeliveryMode {
   if (metadata.delivery === "playback" || metadata.delivery === "file" || metadata.delivery === "both") {
     return metadata.delivery;
   }
@@ -580,7 +580,7 @@ function renderResult(result: ToolResult) {
     actions.hidden = true;
     details.hidden = true;
     summary.textContent = "Audio generation did not complete.";
-    setStatus("The speech tool returned an error.", "error");
+    setStatus("The audio generation tool returned an error.", "error");
     return;
   }
 
@@ -1036,7 +1036,7 @@ app.addEventListener("toolinput", (params) => {
   setDownloading(false);
   actions.hidden = true;
   summary.textContent = "Generating audio…";
-  setStatus("Waiting for the speech provider.");
+  setStatus("Waiting for the audio provider.");
 });
 
 app.addEventListener("toolresult", (result) => {

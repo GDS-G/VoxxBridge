@@ -17,6 +17,7 @@ async def check(url: str) -> None:
             "list_voices",
             "generate_speech",
             "generate_dialogue",
+            "generate_music",
             "materialize_audio_file",
         }
         if names != expected:
@@ -49,6 +50,14 @@ async def check(url: str) -> None:
             raise RuntimeError("generate_dialogue MCP App binding is unavailable")
         if dialogue.output_schema != generate.output_schema:
             raise RuntimeError("generate_dialogue output schema is unavailable")
+        music = next(tool for tool in tools.tools if tool.name == "generate_music")
+        music_properties = music.input_schema.get("properties", {})
+        if music_properties.get("model", {}).get("default") != "music_v2_5":
+            raise RuntimeError("generate_music model schema is unavailable")
+        if music_properties.get("delivery", {}).get("default") != "both":
+            raise RuntimeError("generate_music delivery schema is unavailable")
+        if music.meta != generate.meta or music.output_schema != generate.output_schema:
+            raise RuntimeError("generate_music audio delivery binding is unavailable")
         materialize = next(tool for tool in tools.tools if tool.name == "materialize_audio_file")
         materialize_properties = materialize.input_schema.get("properties", {})
         if materialize.input_schema.get("required") or not {"resource_uri", "file_name"}.issubset(
@@ -71,7 +80,7 @@ async def check(url: str) -> None:
             raise RuntimeError("materialize_audio_file is not visible to the MCP App")
         if materialize_meta.get("openai/widgetAccessible") is not True:
             raise RuntimeError("materialize_audio_file is not accessible to the ChatGPT widget")
-        ui_uri = "ui://voxbridge/audio-delivery-v12.html"
+        ui_uri = "ui://voxbridge/audio-delivery-v13.html"
         if generate.meta is None or generate.meta.get("ui", {}).get("resourceUri") != ui_uri:
             raise RuntimeError("generate_speech MCP App binding is unavailable")
         resources = await client.list_resources(cache_mode="reload")

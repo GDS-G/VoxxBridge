@@ -78,6 +78,7 @@ jobs:
           python -m json.tool ../voxbridge-plugin/.codex-plugin/plugin.json > /dev/null
           python -m json.tool ../voxbridge-plugin/.app.json > /dev/null
           test -f ../voxbridge-plugin/skills/voice-generation/SKILL.md
+          test -f ../voxbridge-plugin/skills/music-generation/SKILL.md
           python - <<'PY'
           import json
           from pathlib import Path
