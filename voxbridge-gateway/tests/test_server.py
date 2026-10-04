@@ -29,6 +29,8 @@ class FakeProvider:
     display_name = "Fake Voice"
     configured = True
     default_model = "fake-model"
+    capabilities = ("text_to_speech", "list_voices")
+    supported_formats = ("wav",)
 
     def __init__(self, result: SpeechResult | None = None) -> None:
         self.result = result or SpeechResult(
@@ -79,6 +81,10 @@ class MusicProvider(FakeProvider):
     id = "fake-music"
     display_name = "Fake Music"
     capabilities = ("music_generation",)
+    supported_formats = ()
+    default_music_model = "music_v2_5"
+    default_music_length_ms = 30_000
+    music_supported_formats = ("mp3",)
 
     def __init__(self) -> None:
         super().__init__()
@@ -99,6 +105,41 @@ class MusicProvider(FakeProvider):
     async def generate_music(self, request) -> SpeechResult:
         self.generated_music.append(request)
         return self.music_result
+
+
+class SoundEffectProvider(FakeProvider):
+    id = "fake-sound-effect"
+    display_name = "Fake Sound Effect"
+    capabilities = ("sound_effect_generation",)
+    supported_formats = ()
+    default_sound_effect_model = "eleven_text_to_sound_v2"
+    default_sound_effect_prompt_influence = 0.3
+    default_sound_effect_duration_seconds = None
+    sound_effect_supported_formats = ("mp3",)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sound_effect_result = SpeechResult(
+            audio=b"fake-sound-effect-audio",
+            mime_type="audio/mpeg",
+            provider=self.id,
+            model="eleven_text_to_sound_v2",
+            request_id="fake-sound-effect-request",
+            metadata={
+                "duration_seconds": 3.0,
+                "loop": True,
+                "prompt_influence": 0.6,
+            },
+        )
+        self.validated_sound_effects = []
+        self.generated_sound_effects = []
+
+    def validate_sound_effect_request(self, request) -> None:
+        self.validated_sound_effects.append(request)
+
+    async def generate_sound_effect(self, request) -> SpeechResult:
+        self.generated_sound_effects.append(request)
+        return self.sound_effect_result
 
 
 class FailingProvider(FakeProvider):
@@ -675,6 +716,162 @@ async def test_generate_music_reports_delivery_failure_without_storing_file(monk
     assert server._audio_artifacts.item_count == 0
 
 
+async def test_generate_sound_effect_routes_controls_and_returns_delivery_metadata(
+    monkeypatch,
+):
+    provider = SoundEffectProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    output = await server.generate_sound_effect(
+        prompt="A compact cinematic whoosh",
+        duration_seconds=3.0,
+        loop=True,
+        prompt_influence=0.6,
+        provider=" FAKE-SOUND-EFFECT ",
+        delivery="both",
+    )
+
+    assert len(provider.validated_sound_effects) == 1
+    assert provider.generated_sound_effects == provider.validated_sound_effects
+    request = provider.generated_sound_effects[0]
+    assert request.prompt == "A compact cinematic whoosh"
+    assert request.duration_seconds == 3.0
+    assert request.loop is True
+    assert request.prompt_influence == 0.6
+    assert request.model == "eleven_text_to_sound_v2"
+    assert request.output_format == "mp3"
+
+    metadata = json.loads(output.content[0].text)
+    assert [item.type for item in output.content] == ["text", "resource_link"]
+    assert metadata["synthetic_audio"] is True
+    assert metadata["audio_kind"] == "sound_effect"
+    assert metadata["provider"] == provider.id
+    assert metadata["model"] == "eleven_text_to_sound_v2"
+    assert metadata["request_id"] == "fake-sound-effect-request"
+    assert metadata["duration_seconds"] == 3.0
+    assert metadata["loop"] is True
+    assert metadata["prompt_influence"] == 0.6
+    assert metadata["delivery"] == "both"
+    assert metadata["file_mime_type"] == "audio/mpeg"
+    assert metadata["file_size_bytes"] == len(b"fake-sound-effect-audio")
+    assert re.fullmatch(r"voxbridge-[0-9a-f]{32}\.mp3", metadata["file_name"])
+    assert isinstance(output.content[1], ResourceLink)
+    assert output.content[1].uri == metadata["resource_uri"]
+    assert output.meta == {
+        "voxbridge/audio": {
+            "data": base64.b64encode(b"fake-sound-effect-audio").decode("ascii"),
+            "mimeType": "audio/mpeg",
+        }
+    }
+
+
+async def test_generate_sound_effect_replay_reuses_identical_result(monkeypatch):
+    provider = SoundEffectProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    first = await server.generate_sound_effect(
+        prompt="A short bell chime",
+        provider=provider.id,
+        delivery="file",
+    )
+    replay = await server.generate_sound_effect(
+        prompt="A short bell chime",
+        model="eleven_text_to_sound_v2",
+        output_format="mp3",
+        prompt_influence=0.3,
+        loop=False,
+        provider=provider.id,
+        delivery="file",
+    )
+
+    assert replay is first
+    assert len(provider.generated_sound_effects) == 1
+
+
+@pytest.mark.parametrize(
+    ("delivery", "content_types", "has_file", "has_app_audio"),
+    [
+        ("playback", ["text", "audio"], False, False),
+        ("file", ["text", "resource_link"], True, False),
+        ("both", ["text", "resource_link"], True, True),
+    ],
+)
+async def test_generate_sound_effect_supports_all_delivery_modes(
+    monkeypatch,
+    delivery,
+    content_types,
+    has_file,
+    has_app_audio,
+):
+    provider = SoundEffectProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    output = await server.generate_sound_effect(
+        prompt="A short bell chime",
+        provider=provider.id,
+        delivery=delivery,
+    )
+
+    metadata = json.loads(output.content[0].text)
+    assert [item.type for item in output.content] == content_types
+    assert metadata["audio_kind"] == "sound_effect"
+    assert metadata["delivery"] == delivery
+    assert metadata["file_resource_included"] is has_file
+    assert (output.meta is not None) is has_app_audio
+    assert server._audio_artifacts.item_count == int(has_file)
+
+
+async def test_generate_sound_effect_rejects_non_capable_provider_before_calls(monkeypatch):
+    sound_effect_provider = SoundEffectProvider()
+    speech_provider = FakeProvider()
+    monkeypatch.setattr(
+        server,
+        "REGISTRY",
+        {
+            sound_effect_provider.id: sound_effect_provider,
+            speech_provider.id: speech_provider,
+        },
+    )
+
+    with pytest.raises(ToolError, match="Fake Voice does not support sound-effect generation"):
+        await server.generate_sound_effect(prompt="A knock", provider=speech_provider.id)
+
+    with pytest.raises(ToolError, match="Unknown provider 'missing'"):
+        await server.generate_sound_effect(prompt="A knock", provider="missing")
+
+    assert sound_effect_provider.validated_sound_effects == []
+    assert sound_effect_provider.generated_sound_effects == []
+    assert speech_provider.validated == []
+    assert speech_provider.generated == []
+
+
+async def test_generate_sound_effect_reports_delivery_failure_without_storing_file(monkeypatch):
+    provider = SoundEffectProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    def fail_delivery(*_args, **_kwargs):
+        raise ToolError("delivery backend failed")
+
+    monkeypatch.setattr(server, "_build_delivery_result", fail_delivery)
+
+    with pytest.raises(
+        ToolError,
+        match=(
+            "Sound-effect generation completed, but final delivery failed.*"
+            "Provider charges may already apply; no sound-effect file was stored.*"
+            "delivery backend failed"
+        ),
+    ):
+        await server.generate_sound_effect(
+            prompt="A knock",
+            provider=provider.id,
+            delivery="file",
+        )
+
+    assert len(provider.generated_sound_effects) == 1
+    assert server._audio_artifacts.item_count == 0
+
+
 async def test_generate_dialogue_preserves_voice_order_controls_and_pauses(monkeypatch):
     provider = DialogueProvider(
         {
@@ -918,6 +1115,36 @@ async def test_generate_dialogue_rejects_mismatched_provider_wav_streams(monkeyp
         )
 
     assert len(provider.generated) == 2
+
+
+async def test_generate_dialogue_rejects_non_speech_provider_before_calls(monkeypatch):
+    provider = MusicProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    with pytest.raises(ToolError, match="does not support dialogue generation"):
+        await server.generate_dialogue(
+            provider.id,
+            [
+                DialogueSegment(text="One", voice_id="one", pause_after_ms=0),
+                DialogueSegment(text="Two", voice_id="two", pause_after_ms=0),
+            ],
+        )
+
+    assert provider.generated == []
+    assert provider.generated_music == []
+
+
+async def test_voice_tools_reject_non_voice_provider_before_calls(monkeypatch):
+    provider = MusicProvider()
+    monkeypatch.setattr(server, "REGISTRY", {provider.id: provider})
+
+    with pytest.raises(ToolError, match="does not provide a voice catalog"):
+        await server.list_voices(provider.id)
+    with pytest.raises(ToolError, match="does not support speech generation"):
+        await server.generate_speech(provider.id, "Hello", voice_id="one")
+
+    assert provider.generated == []
+    assert provider.generated_music == []
     assert server._audio_artifacts.item_count == 0
 
 
@@ -1264,6 +1491,7 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
         "generate_speech",
         "generate_dialogue",
         "generate_music",
+        "generate_sound_effect",
         "materialize_audio_file",
     }
     by_name = {tool.name: tool for tool in result.tools}
@@ -1273,6 +1501,8 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert by_name["generate_dialogue"].annotations.read_only_hint is False
     assert by_name["generate_music"].annotations.read_only_hint is False
     assert by_name["generate_music"].annotations.open_world_hint is True
+    assert by_name["generate_sound_effect"].annotations.read_only_hint is False
+    assert by_name["generate_sound_effect"].annotations.open_world_hint is True
     assert by_name["materialize_audio_file"].annotations.read_only_hint is True
     assert by_name["materialize_audio_file"].annotations.open_world_hint is False
     assert set(by_name["generate_speech"].input_schema["required"]) == {"provider", "text"}
@@ -1317,14 +1547,19 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert "ctx" not in music_schema["properties"]
     assert "required" not in music_schema
     assert music_schema["properties"]["provider"]["default"] == "elevenlabs"
-    assert music_schema["properties"]["model"]["default"] == "music_v2_5"
-    assert set(music_schema["properties"]["model"]["enum"]) == {
+    assert music_schema["properties"]["model"]["default"] is None
+    assert set(music_schema["properties"]["model"]["anyOf"][0]["enum"]) == {
         "music_v1",
         "music_v2",
         "music_v2_5",
+        "lyria-002",
+        "stable-audio-2.5",
     }
-    assert music_schema["properties"]["output_format"]["const"] == "mp3"
-    assert music_schema["properties"]["output_format"]["default"] == "mp3"
+    assert set(music_schema["properties"]["output_format"]["anyOf"][0]["enum"]) == {
+        "mp3",
+        "wav",
+    }
+    assert music_schema["properties"]["output_format"]["default"] is None
     assert music_schema["properties"]["force_instrumental"]["default"] is False
     assert music_schema["properties"]["respect_sections_durations"]["default"] is True
     assert music_schema["properties"]["sign_with_c2pa"]["default"] is False
@@ -1336,22 +1571,52 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     }
     music_length_schema = music_schema["properties"]["music_length_ms"]
     assert any(
-        option.get("minimum") == 3_000 and option.get("maximum") == 600_000
+        option.get("minimum") == 1_000 and option.get("maximum") == 600_000
         for option in music_length_schema["anyOf"]
     )
     seed_schema = music_schema["properties"]["seed"]
     assert any(
-        option.get("minimum") == 0 and option.get("maximum") == 2_147_483_647
+        option.get("minimum") == 0 and option.get("maximum") == 4_294_967_294
         for option in seed_schema["anyOf"]
     )
     assert any(
-        option.get("maxLength") == 4_100 for option in music_schema["properties"]["prompt"]["anyOf"]
+        option.get("maxLength") == 10_000
+        for option in music_schema["properties"]["prompt"]["anyOf"]
     )
     assert any(
         option.get("maxLength") == 40_000
         for option in music_schema["properties"]["composition_plan_json"]["anyOf"]
     )
     assert by_name["generate_music"].output_schema == delivery_output_schema
+    sound_effect_schema = by_name["generate_sound_effect"].input_schema
+    assert "ctx" not in sound_effect_schema["properties"]
+    assert set(sound_effect_schema["required"]) == {"prompt"}
+    assert sound_effect_schema["properties"]["provider"]["default"] == "elevenlabs"
+    assert set(sound_effect_schema["properties"]["model"]["anyOf"][0]["enum"]) == {
+        "eleven_text_to_sound_v2",
+        "stable-audio-2.5",
+    }
+    assert sound_effect_schema["properties"]["model"]["default"] is None
+    assert set(sound_effect_schema["properties"]["output_format"]["anyOf"][0]["enum"]) == {
+        "mp3",
+        "wav",
+    }
+    assert sound_effect_schema["properties"]["output_format"]["default"] is None
+    assert sound_effect_schema["properties"]["loop"]["default"] is False
+    assert sound_effect_schema["properties"]["prompt_influence"]["default"] is None
+    assert sound_effect_schema["properties"]["delivery"]["default"] == "both"
+    assert set(sound_effect_schema["properties"]["delivery"]["enum"]) == {
+        "playback",
+        "file",
+        "both",
+    }
+    duration_schema = sound_effect_schema["properties"]["duration_seconds"]
+    assert any(
+        option.get("minimum") == 0.5 and option.get("maximum") == 190.0
+        for option in duration_schema["anyOf"]
+    )
+    assert sound_effect_schema["properties"]["prompt"]["maxLength"] == 10_000
+    assert by_name["generate_sound_effect"].output_schema == delivery_output_schema
     assert "required" not in by_name["materialize_audio_file"].input_schema
     materialize_uri_schema = by_name["materialize_audio_file"].input_schema["properties"][
         "resource_uri"
@@ -1377,11 +1642,12 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert materialize_output_schema["properties"]["materialized"]["const"] is True
     assert materialize_output_schema["properties"]["file_size_bytes"]["minimum"] == 1
     assert materialize_output_schema["properties"]["sha256"]["pattern"] == "^[a-f0-9]{64}$"
-    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v13.html"
+    assert server._AUDIO_DELIVERY_UI_URI == "ui://voxbridge/audio-delivery-v14.html"
     assert generate_meta["ui"]["resourceUri"] == server._AUDIO_DELIVERY_UI_URI
     assert generate_meta["openai/outputTemplate"] == server._AUDIO_DELIVERY_UI_URI
     assert by_name["generate_dialogue"].meta == generate_meta
     assert by_name["generate_music"].meta == generate_meta
+    assert by_name["generate_sound_effect"].meta == generate_meta
     materialize_meta = by_name["materialize_audio_file"].meta
     assert materialize_meta["ui"]["visibility"] == ["model", "app"]
     assert materialize_meta["openai/widgetAccessible"] is True
@@ -1713,6 +1979,14 @@ def test_google_credentials_file_loads_from_dotenv(tmp_path):
     loaded = Settings(_env_file=env_file)
 
     assert loaded.google_application_credentials == "credentials-from-dotenv.json"
+
+
+def test_google_lyria_location_is_restricted_to_documented_global_endpoint():
+    with pytest.raises(ValueError, match="global"):
+        Settings(
+            _env_file=None,
+            google_cloud_music_location="attacker.example",
+        )
 
 
 def test_download_cache_must_hold_one_maximum_audio_result():

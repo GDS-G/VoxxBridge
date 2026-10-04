@@ -18,6 +18,7 @@ async def check(url: str) -> None:
             "generate_speech",
             "generate_dialogue",
             "generate_music",
+            "generate_sound_effect",
             "materialize_audio_file",
         }
         if names != expected:
@@ -52,12 +53,77 @@ async def check(url: str) -> None:
             raise RuntimeError("generate_dialogue output schema is unavailable")
         music = next(tool for tool in tools.tools if tool.name == "generate_music")
         music_properties = music.input_schema.get("properties", {})
-        if music_properties.get("model", {}).get("default") != "music_v2_5":
-            raise RuntimeError("generate_music model schema is unavailable")
-        if music_properties.get("delivery", {}).get("default") != "both":
+        music_model = music_properties.get("model", {})
+        music_models = {
+            value for option in music_model.get("anyOf", []) for value in option.get("enum", [])
+        }
+        if (
+            music_properties.get("provider", {}).get("default") != "elevenlabs"
+            or music_model.get("default") is not None
+            or not {
+                "music_v1",
+                "music_v2",
+                "music_v2_5",
+                "lyria-002",
+                "stable-audio-2.5",
+            }.issubset(music_models)
+        ):
+            raise RuntimeError("generate_music provider/model schema is unavailable")
+        music_formats = {
+            value
+            for option in music_properties.get("output_format", {}).get("anyOf", [])
+            for value in option.get("enum", [])
+        }
+        if music_properties.get("output_format", {}).get("default") is not None or not {
+            "mp3",
+            "wav",
+        }.issubset(music_formats):
+            raise RuntimeError("generate_music output format schema is unavailable")
+        music_delivery = music_properties.get("delivery", {})
+        if music_delivery.get("default") != "both" or set(music_delivery.get("enum", [])) != {
+            "playback",
+            "file",
+            "both",
+        }:
             raise RuntimeError("generate_music delivery schema is unavailable")
         if music.meta != generate.meta or music.output_schema != generate.output_schema:
             raise RuntimeError("generate_music audio delivery binding is unavailable")
+        sound_effect = next(tool for tool in tools.tools if tool.name == "generate_sound_effect")
+        sound_effect_schema = sound_effect.input_schema
+        sound_effect_properties = sound_effect_schema.get("properties", {})
+        sound_effect_model = sound_effect_properties.get("model", {})
+        sound_effect_models = {
+            value
+            for option in sound_effect_model.get("anyOf", [])
+            for value in option.get("enum", [])
+        }
+        if (
+            set(sound_effect_schema.get("required", [])) != {"prompt"}
+            or sound_effect_properties.get("provider", {}).get("default") != "elevenlabs"
+            or sound_effect_model.get("default") is not None
+            or not {"eleven_text_to_sound_v2", "stable-audio-2.5"}.issubset(sound_effect_models)
+        ):
+            raise RuntimeError("generate_sound_effect provider/model schema is unavailable")
+        sound_effect_formats = {
+            value
+            for option in sound_effect_properties.get("output_format", {}).get("anyOf", [])
+            for value in option.get("enum", [])
+        }
+        if sound_effect_properties.get("output_format", {}).get("default") is not None or not {
+            "mp3",
+            "wav",
+        }.issubset(sound_effect_formats):
+            raise RuntimeError("generate_sound_effect output format schema is unavailable")
+        sound_effect_delivery = sound_effect_properties.get("delivery", {})
+        if sound_effect_delivery.get("default") != "both" or set(
+            sound_effect_delivery.get("enum", [])
+        ) != {"playback", "file", "both"}:
+            raise RuntimeError("generate_sound_effect delivery schema is unavailable")
+        if (
+            sound_effect.meta != generate.meta
+            or sound_effect.output_schema != generate.output_schema
+        ):
+            raise RuntimeError("generate_sound_effect audio delivery binding is unavailable")
         materialize = next(tool for tool in tools.tools if tool.name == "materialize_audio_file")
         materialize_properties = materialize.input_schema.get("properties", {})
         if materialize.input_schema.get("required") or not {"resource_uri", "file_name"}.issubset(
@@ -80,7 +146,7 @@ async def check(url: str) -> None:
             raise RuntimeError("materialize_audio_file is not visible to the MCP App")
         if materialize_meta.get("openai/widgetAccessible") is not True:
             raise RuntimeError("materialize_audio_file is not accessible to the ChatGPT widget")
-        ui_uri = "ui://voxbridge/audio-delivery-v13.html"
+        ui_uri = "ui://voxbridge/audio-delivery-v14.html"
         if generate.meta is None or generate.meta.get("ui", {}).get("resourceUri") != ui_uri:
             raise RuntimeError("generate_speech MCP App binding is unavailable")
         resources = await client.list_resources(cache_mode="reload")

@@ -2,8 +2,8 @@
   "apps": "./.app.json",
   "interface": {
     "displayName": "VoxBridge",
-    "shortDescription": "AI voice and music files",
-    "longDescription": "Generate realistic AI speech across eight providers or create original ElevenLabs music, with immediate playback, an explicit file download, or both. Build one ordered WAV from several voice IDs, synthesize a single voice, or create a downloadable MP3 music track while VoxBridge handles supported provider controls.",
+    "shortDescription": "AI voice, music, and effects",
+    "longDescription": "Generate realistic speech and ordered multi-voice dialogue across supported providers, original music through ElevenLabs, Google Lyria, or Stability AI, and sound effects through ElevenLabs or Stability AI. Play compatible results immediately, explicitly download the exact audio file, or do both while VoxBridge handles each provider's supported controls.",
     "developerName": "VoxBridge",
     "category": "Productivity",
     "capabilities": [
@@ -16,8 +16,8 @@
     ]
   },
   "name": "voxbridge",
-  "version": "0.4.0",
-  "description": "Generate single- or multi-voice AI speech and ElevenLabs music for playback, file download, or both through one ChatGPT workflow.",
+  "version": "0.5.0",
+  "description": "Generate multi-provider speech and dialogue, music, and sound effects for playback, file download, or both through one ChatGPT workflow.",
   "author": {
     "name": "VoxBridge"
   },

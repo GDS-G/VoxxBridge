@@ -7,16 +7,18 @@ from unittest.mock import AsyncMock, call
 import httpx
 import pytest
 
-from voxbridge.models import MusicRequest, SpeechRequest
+from voxbridge.models import MusicRequest, SoundEffectRequest, SpeechRequest
 from voxbridge.providers.azure_speech import AzureSpeechProvider
 from voxbridge.providers.base import ProviderError
 from voxbridge.providers.cartesia import CartesiaProvider
 from voxbridge.providers.deepgram import DeepgramProvider
 from voxbridge.providers.elevenlabs import ElevenLabsProvider
 from voxbridge.providers.google_cloud import GoogleCloudProvider
+from voxbridge.providers.google_lyria import GoogleLyriaProvider
 from voxbridge.providers.hume import HumeProvider
 from voxbridge.providers.openai_voice import OpenAIVoiceProvider
 from voxbridge.providers.resemble import ResembleProvider
+from voxbridge.providers.stability import StabilityAudioProvider
 
 
 async def install_transport(provider, handler) -> None:
@@ -410,6 +412,228 @@ async def test_elevenlabs_music_returns_safe_provider_errors(status_code, messag
     assert str(error) == message
     assert error.status_code == status_code
     assert error.request_id == "music-error-request"
+    assert error.retryable is False
+    assert "sensitive upstream diagnostic" not in str(error)
+    assert "do-not-leak-api-key" not in str(error)
+
+
+async def test_elevenlabs_sound_effect_contract_and_result_metadata():
+    provider = ElevenLabsProvider(
+        "eleven-secret",
+        sound_effect_timeout=87.0,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url == httpx.URL(
+            "https://api.elevenlabs.io/v1/sound-generation?output_format=mp3_44100_128"
+        )
+        assert request.headers["xi-api-key"] == "eleven-secret"
+        assert request.headers["content-type"] == "application/json"
+        assert body(request) == {
+            "text": "Soft rain on a canvas tent with distant thunder",
+            "loop": True,
+            "prompt_influence": 0.7,
+            "model_id": "eleven_text_to_sound_v2",
+            "duration_seconds": 6.5,
+        }
+        assert request.extensions["timeout"] == {
+            "connect": 87.0,
+            "read": 87.0,
+            "write": 87.0,
+            "pool": 87.0,
+        }
+        return httpx.Response(
+            200,
+            content=b"ID3-eleven-sound-effect",
+            headers={
+                "content-type": "audio/mpeg; charset=binary",
+                "request-id": "sound-effect-request-1",
+                "character-cost": "260",
+            },
+        )
+
+    await install_transport(provider, handler)
+    try:
+        result = await provider.generate_sound_effect(
+            SoundEffectRequest(
+                prompt="Soft rain on a canvas tent with distant thunder",
+                duration_seconds=6.5,
+                loop=True,
+                prompt_influence=0.7,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert result.audio == b"ID3-eleven-sound-effect"
+    assert result.mime_type == "audio/mpeg"
+    assert result.provider == "elevenlabs"
+    assert result.model == "eleven_text_to_sound_v2"
+    assert result.request_id == "sound-effect-request-1"
+    assert result.metadata == {
+        "sound_effect": True,
+        "duration_seconds": 6.5,
+        "loop": True,
+        "prompt_influence": 0.7,
+        "character_cost": "260",
+    }
+
+
+async def test_elevenlabs_sound_effect_omits_auto_duration():
+    provider = ElevenLabsProvider("eleven-secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert body(request) == {
+            "text": "A single wooden knock",
+            "loop": False,
+            "prompt_influence": 0.3,
+            "model_id": "eleven_text_to_sound_v2",
+        }
+        return httpx.Response(200, content=b"ID3-knock")
+
+    await install_transport(provider, handler)
+    try:
+        result = await provider.generate_sound_effect(
+            SoundEffectRequest(prompt="A single wooden knock")
+        )
+    finally:
+        await provider.aclose()
+
+    assert result.metadata["duration_seconds"] is None
+
+
+async def test_elevenlabs_sound_effect_rejects_non_audio_success_response():
+    provider = ElevenLabsProvider("eleven-secret")
+
+    await install_transport(
+        provider,
+        lambda request: httpx.Response(
+            200,
+            json={"error": "unexpected success envelope"},
+            headers={"content-type": "application/json"},
+        ),
+    )
+    try:
+        with pytest.raises(ProviderError, match="invalid sound-effect audio response"):
+            await provider.generate_sound_effect(SoundEffectRequest(prompt="A short knock"))
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    ("sound_effect_request", "message"),
+    [
+        (
+            SoundEffectRequest(prompt="   "),
+            "ElevenLabs sound-effect prompt cannot be empty",
+        ),
+        (
+            SoundEffectRequest(prompt="x" * 451),
+            "ElevenLabs sound-effect prompt accepts at most 450 characters",
+        ),
+        (
+            SoundEffectRequest(prompt="Knock", model="sound-v3"),
+            "ElevenLabs sound-effect model must be eleven_text_to_sound_v2",
+        ),
+        (
+            SoundEffectRequest(prompt="Knock", output_format="wav"),
+            "ElevenLabs sound-effect output must be mp3",
+        ),
+        (
+            SoundEffectRequest(prompt="Knock", duration_seconds=True),
+            "ElevenLabs sound-effect duration_seconds must be a number",
+        ),
+        (
+            SoundEffectRequest(prompt="Knock", duration_seconds=0.49),
+            "ElevenLabs sound-effect duration_seconds must be between 0.5 and 30",
+        ),
+        (
+            SoundEffectRequest(prompt="Knock", duration_seconds=30.01),
+            "ElevenLabs sound-effect duration_seconds must be between 0.5 and 30",
+        ),
+        (
+            SoundEffectRequest(prompt="Knock", loop="yes"),
+            "ElevenLabs sound-effect loop must be a boolean",
+        ),
+        (
+            SoundEffectRequest(prompt="Knock", prompt_influence=True),
+            "ElevenLabs sound-effect prompt_influence must be a number between 0 and 1",
+        ),
+        (
+            SoundEffectRequest(prompt="Knock", prompt_influence=-0.01),
+            "ElevenLabs sound-effect prompt_influence must be a number between 0 and 1",
+        ),
+        (
+            SoundEffectRequest(prompt="Knock", prompt_influence=1.01),
+            "ElevenLabs sound-effect prompt_influence must be a number between 0 and 1",
+        ),
+    ],
+)
+async def test_elevenlabs_sound_effect_rejects_invalid_requests_before_http(
+    sound_effect_request,
+    message,
+):
+    provider = ElevenLabsProvider("key")
+    try:
+        with pytest.raises(ProviderError, match=message):
+            await provider.generate_sound_effect(sound_effect_request)
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    "sound_effect_request",
+    [
+        SoundEffectRequest(prompt="x" * 450, duration_seconds=0.5, prompt_influence=0.0),
+        SoundEffectRequest(prompt="Knock", duration_seconds=30.0, prompt_influence=1.0),
+    ],
+)
+async def test_elevenlabs_sound_effect_accepts_documented_boundaries(sound_effect_request):
+    provider = ElevenLabsProvider("key")
+    try:
+        provider.validate_sound_effect_request(sound_effect_request)
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "message"),
+    [
+        (
+            403,
+            "ElevenLabs rejected its credentials or Sound Effects API entitlement",
+        ),
+        (
+            422,
+            "ElevenLabs rejected the sound-effect prompt or settings",
+        ),
+    ],
+)
+async def test_elevenlabs_sound_effect_returns_safe_provider_errors(status_code, message):
+    provider = ElevenLabsProvider("do-not-leak-api-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            json={
+                "detail": "sensitive upstream diagnostic",
+                "api_key": "do-not-leak-api-key",
+            },
+            headers={"request-id": "sound-effect-error-request"},
+        )
+
+    await install_transport(provider, handler)
+    try:
+        with pytest.raises(ProviderError) as exc_info:
+            await provider.generate_sound_effect(SoundEffectRequest(prompt="Safe test"))
+    finally:
+        await provider.aclose()
+
+    error = exc_info.value
+    assert str(error) == message
+    assert error.status_code == status_code
+    assert error.request_id == "sound-effect-error-request"
     assert error.retryable is False
     assert "sensitive upstream diagnostic" not in str(error)
     assert "do-not-leak-api-key" not in str(error)
@@ -1133,6 +1357,390 @@ async def test_google_detected_project_is_not_promoted_to_quota_project(monkeypa
         ("GET", "https://texttospeech.googleapis.com/v1/voices"),
         ("POST", "https://texttospeech.googleapis.com/v1/text:synthesize"),
     ]
+
+
+async def test_google_lyria_configuration_requires_explicit_enable_and_project():
+    disabled = GoogleLyriaProvider("project", enabled=False)
+    missing_project = GoogleLyriaProvider(None, enabled=True)
+    configured = GoogleLyriaProvider("project", enabled=True)
+    try:
+        assert disabled.configured is False
+        assert missing_project.configured is False
+        assert configured.configured is True
+    finally:
+        await disabled.aclose()
+        await missing_project.aclose()
+        await configured.aclose()
+
+
+def test_google_lyria_rejects_non_global_location_before_authentication():
+    with pytest.raises(ValueError, match="location must be global"):
+        GoogleLyriaProvider(
+            "project",
+            enabled=True,
+            location="attacker.example",
+        )
+
+
+async def test_google_lyria_music_contract_and_result_metadata(monkeypatch):
+    provider = GoogleLyriaProvider(
+        "project-123",
+        enabled=True,
+        location="global",
+        music_timeout=91.0,
+    )
+    auth = AsyncMock(return_value={"Authorization": "Bearer google-token"})
+    monkeypatch.setattr(provider, "_auth_headers", auth)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url == httpx.URL(
+            "https://aiplatform.googleapis.com/v1/projects/project-123/locations/global/"
+            "publishers/google/models/lyria-002:predict"
+        )
+        assert request.headers["authorization"] == "Bearer google-token"
+        assert body(request) == {
+            "instances": [
+                {
+                    "prompt": "A warm cinematic instrumental with strings",
+                    "negative_prompt": "vocals, harsh percussion",
+                    "seed": 98765,
+                }
+            ],
+            "parameters": {},
+        }
+        assert request.extensions["timeout"] == {
+            "connect": 91.0,
+            "read": 91.0,
+            "write": 91.0,
+            "pool": 91.0,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "predictions": [
+                    {
+                        "audioContent": base64.b64encode(b"RIFF-google-lyria").decode(),
+                        "mimeType": "audio/wav",
+                    }
+                ],
+                "modelDisplayName": "Lyria 2",
+            },
+            headers={"x-goog-request-id": "lyria-request-1"},
+        )
+
+    await install_transport(provider, handler)
+    try:
+        result = await provider.generate_music(
+            MusicRequest(
+                prompt="A warm cinematic instrumental with strings",
+                negative_prompt="vocals, harsh percussion",
+                model="lyria-002",
+                output_format="wav",
+                seed=98765,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    auth.assert_awaited_once()
+    assert result.audio == b"RIFF-google-lyria"
+    assert result.mime_type == "audio/wav"
+    assert result.provider == "google-lyria"
+    assert result.model == "lyria-002"
+    assert result.request_id == "lyria-request-1"
+    assert result.metadata == {
+        "music": True,
+        "music_mode": "prompt",
+        "duration_control": "provider_fixed",
+        "force_instrumental": True,
+        "seed": 98765,
+        "model_display_name": "Lyria 2",
+    }
+
+
+@pytest.mark.parametrize(
+    ("music_request", "message"),
+    [
+        (MusicRequest(model="lyria-002", output_format="wav"), "requires a non-empty"),
+        (
+            MusicRequest(
+                prompt="Music",
+                composition_plan={"sections": []},
+                model="lyria-002",
+                output_format="wav",
+            ),
+            "does not support composition plans",
+        ),
+        (
+            MusicRequest(prompt="Music", model="music_v2_5", output_format="wav"),
+            "music model must be lyria-002",
+        ),
+        (
+            MusicRequest(prompt="Music", model="lyria-002", output_format="mp3"),
+            "output must be wav",
+        ),
+        (
+            MusicRequest(
+                prompt="Music",
+                music_length_ms=30_000,
+                model="lyria-002",
+                output_format="wav",
+            ),
+            "provider-fixed clip duration",
+        ),
+        (
+            MusicRequest(
+                prompt="Music",
+                negative_prompt="   ",
+                model="lyria-002",
+                output_format="wav",
+            ),
+            "negative_prompt cannot be blank",
+        ),
+        (
+            MusicRequest(
+                prompt="Music",
+                finetune_id="custom",
+                model="lyria-002",
+                output_format="wav",
+            ),
+            "does not support finetune_id",
+        ),
+        (
+            MusicRequest(
+                prompt="Music",
+                sign_with_c2pa=True,
+                model="lyria-002",
+                output_format="wav",
+            ),
+            "does not expose C2PA signing",
+        ),
+    ],
+)
+async def test_google_lyria_rejects_invalid_requests_before_http(music_request, message):
+    provider = GoogleLyriaProvider("project", enabled=True)
+    try:
+        with pytest.raises(ProviderError, match=message):
+            await provider.generate_music(music_request)
+    finally:
+        await provider.aclose()
+
+
+async def test_stability_music_contract_and_result_metadata():
+    provider = StabilityAudioProvider("stability-secret", generation_timeout=82.0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url == httpx.URL(
+            "https://api.stability.ai/v2beta/audio/stable-audio-2/text-to-audio"
+        )
+        assert request.headers["authorization"] == "Bearer stability-secret"
+        assert request.headers["accept"] == "audio/*"
+        assert request.headers["content-type"].startswith("multipart/form-data; boundary=")
+        multipart = request.content
+        for name, value in (
+            (b"prompt", b"A bright instrumental logo sting"),
+            (b"duration", b"4.0"),
+            (b"model", b"stable-audio-2.5"),
+            (b"output_format", b"wav"),
+            (b"seed", b"4294967294"),
+        ):
+            assert b'name="' + name + b'"' in multipart
+            assert value in multipart
+        assert request.extensions["timeout"] == {
+            "connect": 82.0,
+            "read": 82.0,
+            "write": 82.0,
+            "pool": 82.0,
+        }
+        return httpx.Response(
+            200,
+            content=b"RIFF-stability-music",
+            headers={"content-type": "audio/wav", "x-request-id": "stable-request-1"},
+        )
+
+    await install_transport(provider, handler)
+    try:
+        result = await provider.generate_music(
+            MusicRequest(
+                prompt="A bright instrumental logo sting",
+                music_length_ms=4_000,
+                model="stable-audio-2.5",
+                output_format="wav",
+                seed=4_294_967_294,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert result.audio == b"RIFF-stability-music"
+    assert result.mime_type == "audio/wav"
+    assert result.provider == "stability"
+    assert result.model == "stable-audio-2.5"
+    assert result.request_id == "stable-request-1"
+    assert result.metadata == {
+        "duration_seconds": 4.0,
+        "seed": 4_294_967_294,
+        "credits_per_successful_generation": 20,
+        "music": True,
+        "music_mode": "prompt",
+        "music_length_ms": 4_000,
+    }
+
+
+async def test_stability_sound_effect_contract_and_result_metadata():
+    provider = StabilityAudioProvider("stability-secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        multipart = request.content
+        assert b"A sharp sci-fi door hiss" in multipart
+        assert b'name="duration"' in multipart
+        assert b"5.0" in multipart
+        assert b'name="output_format"' in multipart
+        assert b"mp3" in multipart
+        return httpx.Response(200, content=b"ID3-stability-effect")
+
+    await install_transport(provider, handler)
+    try:
+        result = await provider.generate_sound_effect(
+            SoundEffectRequest(
+                prompt="A sharp sci-fi door hiss",
+                duration_seconds=5.0,
+                model="stable-audio-2.5",
+                output_format="mp3",
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert result.mime_type == "audio/mpeg"
+    assert result.metadata == {
+        "duration_seconds": 5.0,
+        "seed": None,
+        "credits_per_successful_generation": 20,
+        "sound_effect": True,
+    }
+
+
+async def test_stability_rejects_non_audio_success_response():
+    provider = StabilityAudioProvider("stability-secret")
+
+    await install_transport(
+        provider,
+        lambda request: httpx.Response(
+            200,
+            json={"error": "unexpected success envelope"},
+            headers={"content-type": "application/json"},
+        ),
+    )
+    try:
+        with pytest.raises(ProviderError, match="invalid audio response"):
+            await provider.generate_sound_effect(
+                SoundEffectRequest(
+                    prompt="A short impact",
+                    duration_seconds=1.0,
+                    model="stable-audio-2.5",
+                    output_format="mp3",
+                )
+            )
+    finally:
+        await provider.aclose()
+
+
+async def test_stability_rejects_wav_that_would_exceed_gateway_limit_before_http():
+    provider = StabilityAudioProvider("stability-secret")
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=b"unexpected")
+
+    await install_transport(provider, handler)
+    try:
+        assert 59 < provider.wav_duration_max_seconds_for_audio_limit < 60
+        with pytest.raises(ProviderError, match="WAV duration exceeds"):
+            await provider.generate_music(
+                MusicRequest(
+                    prompt="A long ambient bed",
+                    music_length_ms=60_000,
+                    model="stable-audio-2.5",
+                    output_format="wav",
+                )
+            )
+    finally:
+        await provider.aclose()
+
+    assert calls == 0
+
+
+@pytest.mark.parametrize(
+    ("request_kind", "candidate", "message"),
+    [
+        (
+            "music",
+            MusicRequest(
+                prompt="Music",
+                composition_plan={"sections": []},
+                model="stable-audio-2.5",
+            ),
+            "does not support composition plans",
+        ),
+        (
+            "music",
+            MusicRequest(prompt="Music", model="stable-audio-2.5", music_length_ms=999),
+            "duration must be between 1 and 190",
+        ),
+        (
+            "music",
+            MusicRequest(prompt="Music", model="stable-audio-2.5", seed=4_294_967_295),
+            "seed must be between 0 and 4294967294",
+        ),
+        (
+            "music",
+            MusicRequest(
+                prompt="Music",
+                model="stable-audio-2.5",
+                negative_prompt="vocals",
+            ),
+            "does not expose negative_prompt",
+        ),
+        (
+            "sound_effect",
+            SoundEffectRequest(
+                prompt="Effect",
+                duration_seconds=191,
+                model="stable-audio-2.5",
+            ),
+            "duration must be between 1 and 190",
+        ),
+        (
+            "sound_effect",
+            SoundEffectRequest(prompt="Effect", loop=True, model="stable-audio-2.5"),
+            "does not expose seamless looping",
+        ),
+        (
+            "sound_effect",
+            SoundEffectRequest(
+                prompt="Effect",
+                prompt_influence=0.3,
+                model="stable-audio-2.5",
+            ),
+            "does not expose prompt_influence",
+        ),
+    ],
+)
+async def test_stability_rejects_invalid_requests_before_http(request_kind, candidate, message):
+    provider = StabilityAudioProvider("key")
+    try:
+        with pytest.raises(ProviderError, match=message):
+            if request_kind == "music":
+                await provider.generate_music(candidate)
+            else:
+                await provider.generate_sound_effect(candidate)
+    finally:
+        await provider.aclose()
 
 
 @pytest.mark.parametrize(

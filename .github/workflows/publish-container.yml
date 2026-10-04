@@ -53,7 +53,7 @@ jobs:
       - name: Verify packaged gateway and tunnel client
         run: |
           docker run --rm --entrypoint python voxbridge-gateway:smoke \
-            -c "import voxbridge; import voxbridge.hosted; assert voxbridge.__version__ == '0.4.0'"
+            -c "import voxbridge; import voxbridge.hosted; assert voxbridge.__version__ == '0.5.0'"
           docker run --rm --entrypoint tunnel-client voxbridge-gateway:smoke --version
 
   build-and-push:

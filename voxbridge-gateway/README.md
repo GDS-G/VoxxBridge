@@ -1,6 +1,6 @@
 # VoxBridge Gateway
 
-VoxBridge `0.4.0` is an MCP gateway for provider-neutral realistic speech plus ElevenLabs Music generation. It exposes a common text-to-speech surface for:
+VoxBridge `0.5.0` is an MCP gateway for provider-neutral realistic speech, multi-voice dialogue, music, and sound-effect generation. It exposes one text-to-speech surface for eight providers:
 
 - ElevenLabs
 - Hume AI
@@ -17,7 +17,10 @@ VoxBridge `0.4.0` is an MCP gateway for provider-neutral realistic speech plus E
 
 | Area | Repository status |
 | --- | --- |
-| `list_providers`, `list_voices`, `generate_speech`, `generate_dialogue`, `generate_music`, and `materialize_audio_file` | Implemented |
+| `list_providers`, `list_voices`, `generate_speech`, `generate_dialogue`, `generate_music`, `generate_sound_effect`, and `materialize_audio_file` | Implemented |
+| Speech providers | Eight adapters: ElevenLabs, Hume, Cartesia, Resemble, OpenAI, Deepgram, Google Cloud Text-to-Speech, and Microsoft Azure Speech |
+| Music providers | ElevenLabs Music, Google Cloud Lyria 2, and Stability AI Stable Audio 2.5 |
+| Sound-effect providers | ElevenLabs Sound Effects and Stability AI Stable Audio 2.5 |
 | stdio and Streamable HTTP transports | Implemented |
 | Loopback-by-default HTTP and an explicit non-loopback safety gate | Implemented |
 | Unit tests, lint, MCP smoke test, and package-build workflow | Configured for Python 3.11 and 3.12; a workflow run is the evidence that a particular revision passed |
@@ -29,14 +32,15 @@ The plugin package deliberately contains no provider keys and no placeholder pub
 
 ## MCP tools
 
-- `list_providers()` returns capabilities, defaults, and whether each adapter is configured.
+- `list_providers()` returns capabilities, defaults, supported formats, `supports_dialogue`, and whether each adapter is configured. Provider IDs are `elevenlabs`, `hume`, `cartesia`, `resemble`, `openai`, `deepgram`, `google`, `azure`, `google-lyria`, and `stability`.
 - `list_voices(provider, language?, limit?)` returns a provider voice catalog.
 - `generate_speech(..., delivery="playback" | "file" | "both")` invokes the selected provider once and returns the selected representation: playable MCP `AudioContent`, a short-lived named `ResourceLink` with a host-mediated Download button, or both via app-only playback data plus the same downloadable resource. The default is `both`.
-- `generate_dialogue(provider, segments, model?, language?, delivery?)` synthesizes ordered segments with a different `voice_id` per segment and assembles them into one PCM WAV file. The current release keeps one provider and one global model per file, makes one upstream call per segment, and rejects incompatible returned WAV parameters rather than silently resampling.
-- `generate_music(prompt?, composition_plan_json?, music_length_ms?, model="music_v2_5", output_format="mp3", force_instrumental?, seed?, finetune_id?, respect_sections_durations?, sign_with_c2pa?, delivery="playback" | "file" | "both", provider="elevenlabs")` creates one synthetic ElevenLabs music track. Exactly one of `prompt` or `composition_plan_json` is required. Prompt mode defaults to a bounded 30 seconds when duration is omitted. The portable release returns MP3 and uses the same playback, file, attachment, and replay-suppression path as speech.
-- `materialize_audio_file(resource_uri?, file_name?)` returns generated speech, dialogue, or music as a bounded embedded binary resource when ChatGPT or another compatible downstream tool needs the exact bytes. Pass exactly one locator: prefer the exact compact `materialize_resource_uri` included in every file-bearing generation result, or use the exact generated `file_name` when a host hides that custom URI. The longer ResourceLink `resource_uri` remains accepted for compatibility. Never infer or alter either locator. The tool prepares the embedded resource; it does not attach the file by itself. The MCP App separately uses `ui/update-model-context` to add the verified resource to a compatible ChatGPT composer. Neither operation promises a reusable-library file ID or universal downstream audio support.
+- `generate_dialogue(provider, segments, model?, language?, delivery?)` synthesizes ordered segments with a different `voice_id` per segment and assembles them into one PCM WAV file. All eight speech adapters currently report `supports_dialogue: true`. The current release keeps one provider and one global model per file, makes one upstream call per segment, and rejects incompatible returned WAV parameters rather than silently resampling.
+- `generate_music(prompt?, composition_plan_json?, negative_prompt?, music_length_ms?, model?, output_format?, force_instrumental?, seed?, finetune_id?, respect_sections_durations?, sign_with_c2pa?, delivery="playback" | "file" | "both", provider="elevenlabs")` creates one synthetic music track. Omitted model and format values resolve from the selected provider. ElevenLabs supports a prompt or composition plan and returns MP3; Google Lyria accepts a prompt and returns a provider-fixed instrumental WAV; Stability accepts a prompt and returns MP3 or WAV.
+- `generate_sound_effect(prompt, duration_seconds?, loop?, prompt_influence?, seed?, model?, output_format?, delivery="playback" | "file" | "both", provider="elevenlabs")` creates one sound effect, ambience, Foley event, one-shot, loop, or short musical component. ElevenLabs returns MP3 and supports its loop and prompt-influence controls; Stability returns MP3 or WAV and supports a seed.
+- `materialize_audio_file(resource_uri?, file_name?)` returns generated speech, dialogue, music, or sound effects as a bounded embedded binary resource when ChatGPT or another compatible downstream tool needs the exact bytes. Pass exactly one locator: prefer the exact compact `materialize_resource_uri` included in every file-bearing generation result, or use the exact generated `file_name` when a host hides that custom URI. The longer ResourceLink `resource_uri` remains accepted for compatibility. Never infer or alter either locator. The tool prepares the embedded resource; it does not attach the file by itself. The MCP App separately uses `ui/update-model-context` to add the verified resource to a compatible ChatGPT composer. Neither operation promises a reusable-library file ID or universal downstream audio support.
 
-ChatGPT can replay a non-idempotent tool call while resolving an approval step. VoxBridge hashes the normalized request, scopes it to the ChatGPT session when that metadata is available, and reuses a successful identical result for up to two minutes. Concurrent duplicates are single-flighted, failed calls are never cached, and at most two completed results are retained (reduced further when configured artifact capacity requires it). Distinct in-flight work is also capped at the configured generation-concurrency limit. This guard prevents an approval replay from repeating provider charges for speech, dialogue, or music; it does not change the tools' non-idempotent contract or authorize callers to submit deliberate duplicates.
+ChatGPT can replay a non-idempotent tool call while resolving an approval step. VoxBridge hashes the normalized request, scopes it to the ChatGPT session when that metadata is available, and reuses a successful identical result for up to two minutes. Concurrent duplicates are single-flighted, failed calls are never cached, and at most two completed results are retained (reduced further when configured artifact capacity requires it). Distinct in-flight work is also capped at the configured generation-concurrency limit. This guard prevents an approval replay from repeating provider charges for speech, dialogue, music, or sound effects; it does not change the tools' non-idempotent contract or authorize callers to submit deliberate duplicates.
 
 `playback` returns inline MCP `AudioContent`. `file` returns a short-lived `ResourceLink`. `both` intentionally keeps public content in the downloadable `ResourceLink` shape and sends the same generated bytes to the bound MCP App through model-hidden tool-result metadata. This preserves the portable file reference while giving the App reliable playback; `resources/read` remains a fallback for MCP Apps hosts that do not forward custom metadata. Clients without MCP Apps still receive the readable file resource.
 
@@ -52,15 +56,28 @@ The Download button is an MCP App using the standard `ui/download-file` host flo
 
 Each dialogue segment includes `text`, `voice_id`, optional `instructions`, `speed`, `language`, provider-specific `options`, and `pause_after_ms`. The final segment's pause is ignored. The developer-alpha defaults are at most 10 segments, 5,000 total characters, 30 seconds of inserted pauses, 600 seconds of combined audio, and 20 MiB of final audio.
 
-All deterministic shared validation runs before synthesis, then segments are generated sequentially and appended incrementally. A provider can still reject a later segment after earlier calls complete. On any segment, format, size, duration, or assembly failure, VoxBridge stores no combined file and reports that earlier provider charges may already apply. The current release deliberately supports PCM WAV only for combined dialogue. MP3 output, cross-provider files, per-segment models, and automatic resampling require a future decode/resample/encode pipeline.
+Dialogue is not ElevenLabs-only. It works with a configured speech adapter that reports `supports_dialogue: true`; all eight speech adapters in this release currently do. Each file still uses one provider, one global model, and that provider's voice IDs. All deterministic shared validation runs before synthesis, then segments are generated sequentially and appended incrementally. A provider can still reject a later segment after earlier calls complete. On any segment, format, size, duration, or assembly failure, VoxBridge stores no combined file and reports that earlier provider charges may already apply. The current release deliberately supports compatible PCM WAV segments only. MP3 output, cross-provider files, per-segment models, and automatic resampling require a future decode/resample/encode pipeline.
 
-### ElevenLabs Music boundary
+### Music boundary
 
-`generate_music` is deliberately separate from speech and dialogue. It accepts exactly one natural-language `prompt` (up to 4,100 characters) or one complete `composition_plan_json` object serialized as a string (up to 40,000 characters). The default model is `music_v2_5`; `music_v1` and `music_v2` remain available when explicitly requested. Prompt-mode duration can be 3,000 through 600,000 milliseconds and defaults to 30,000 milliseconds when omitted. `force_instrumental` and duration are prompt-only. `seed` is composition-plan-only, and the provider does not promise exact reproducibility. `finetune_id`, `respect_sections_durations`, and MP3 C2PA signing are exposed only where the ElevenLabs API accepts them. The portable output format is MP3.
+`generate_music` is deliberately separate from speech, dialogue, and sound effects. Select a configured provider that advertises `music_generation`; VoxBridge never silently switches providers. Omit `model` and `output_format` to use the selected provider's defaults.
 
-Every generation can consume ElevenLabs quota. Approval-sensitive identical host replays use the same short-window safeguard as speech, but callers must not intentionally submit duplicates to obtain another presentation or attachment. If the provider completes generation but VoxBridge cannot store or deliver the result, the error warns that charges may already apply.
+- **ElevenLabs** (`provider="elevenlabs"`): accepts exactly one prompt (up to 4,100 characters) or one complete `composition_plan_json` object serialized as a string (up to 40,000 characters). The default model is `music_v2_5`; `music_v1` and `music_v2` remain available. Prompt-mode duration is 3,000–600,000 milliseconds and defaults to 30,000. `force_instrumental` and duration are prompt-only; `seed` is composition-plan-only. `finetune_id`, section-duration enforcement, and MP3 C2PA signing are provider-specific. Output is MP3.
+- **Google Cloud Lyria 2** (`provider="google-lyria"`): accepts one US-English prompt, optional `negative_prompt`, and optional seed with model `lyria-002`. It returns one provider-fixed instrumental 48 kHz WAV; no caller-selected duration, vocals, composition plan, finetune, C2PA, or watermark control is exposed. This is a distinct provider from Google Cloud Text-to-Speech.
+- **Stability AI Stable Audio 2.5** (`provider="stability"`): accepts a prompt up to 10,000 characters, optional seed, and a duration of 1,000–190,000 milliseconds, defaulting to 30,000. Model `stable-audio-2.5` returns MP3 or WAV. MP3 can use the full provider duration range; uncompressed WAV is preflighted against the gateway's configured audio-byte limit before any paid call, and `list_providers` reports the resulting `wav_duration_max_seconds_for_audio_limit` (about 59 seconds under the conservative default 20 MiB cap). Put instrumental/vocal intent and exclusions in the prompt; the API surface does not expose separate `negative_prompt`, `force_instrumental`, composition-plan, finetune, or C2PA controls.
 
-This release does not expose audio-reference or music upload, inpainting, video-to-music, stem separation, finetune creation/training, or post-generation section editing. Generated music is synthetic audio, not a promise of copyright ownership, royalty-free status, or commercial clearance. Users are responsible for current ElevenLabs Music Terms, plan entitlements, applicable law, and rights in prompts, lyrics, samples, finetune data, and downstream use. Avoid copyrighted lyrics and prompts that target protected songs, recordings, or living artists too closely.
+Every generation can consume provider quota or credits. Approval-sensitive identical host replays use the same short-window safeguard as speech, but callers must not intentionally submit duplicates to obtain another presentation or attachment. If the provider completes generation but VoxBridge cannot store or deliver the result, the error warns that charges may already apply.
+
+This release does not expose audio-reference or music upload, inpainting, video-to-music, stem separation, finetune creation/training, or post-generation section editing. Generated music is synthetic audio, not a promise of copyright ownership, royalty-free status, or commercial clearance. Users are responsible for the selected provider's current terms, account plan, applicable law, and rights in prompts, lyrics, samples, finetune data, and downstream use. Avoid copyrighted lyrics and prompts that target protected songs, recordings, or living artists too closely.
+
+### Sound-effect boundary
+
+`generate_sound_effect` uses a configured provider advertising `sound_effect_generation` and shares music's delivery, materialization, and replay safeguards.
+
+- **ElevenLabs** (`provider="elevenlabs"`): model `eleven_text_to_sound_v2`, MP3 output, prompts up to 450 characters, optional 0.5–30-second duration, seamless-loop request, and `prompt_influence` from 0–1 (default 0.3). ElevenLabs does not expose a seed for this endpoint.
+- **Stability AI** (`provider="stability"`): model `stable-audio-2.5`, MP3 or WAV, prompts up to 10,000 characters, 1–190-second duration (default 5 seconds in VoxBridge), and optional seed. MP3 can use the full provider duration range; WAV is preflighted against the configured audio-byte cap using the `wav_duration_max_seconds_for_audio_limit` provider metadata. This API surface does not expose seamless-loop or prompt-influence controls.
+
+Sound effects are synthetic audio and can consume paid quota or credits. A generated effect is not a promise of uniqueness, copyright ownership, royalty-free status, or commercial clearance. Review the selected provider's current terms and content rules.
 
 Provider-specific controls are capability-gated. VoxBridge does not silently switch providers.
 `list_providers` reports both `supported_formats` and `file_delivery_formats`. Raw headerless PCM is not exposed in this developer alpha because it lacks portable sample metadata; request WAV instead.
@@ -104,18 +121,20 @@ The server reads `.env` from its working directory. Do not commit `.env`, servic
 
 ## Provider environment variables
 
-Configure only providers you plan to use.
+Configure only providers you plan to use. Provider keys and Google credential files are runtime secrets; never place them in the plugin ZIP, image, repository, or chat.
 
-| Provider | Required configuration |
-| --- | --- |
-| ElevenLabs | `ELEVENLABS_API_KEY` |
-| Hume AI | `HUME_API_KEY` |
-| Cartesia | `CARTESIA_API_KEY`; `CARTESIA_VERSION` is currently fixed to the supported `2026-08-14` contract. |
-| Resemble AI | `RESEMBLE_API_KEY` |
-| OpenAI | `OPENAI_API_KEY` |
-| Deepgram | `DEEPGRAM_API_KEY` |
-| Google Cloud Text-to-Speech | Application Default Credentials; for local file-based ADC, set `GOOGLE_APPLICATION_CREDENTIALS`. For metadata/workload-identity ADC, set `GOOGLE_CLOUD_TTS_ENABLED=true`. `GOOGLE_CLOUD_PROJECT` is an optional quota-project override. |
-| Microsoft Azure Speech | `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` |
+| Provider | Capability | Required configuration |
+| --- | --- | --- |
+| ElevenLabs | Speech, dialogue, music, sound effects | `ELEVENLABS_API_KEY`; music and Sound Effects API access remain subject to the account's plan and entitlements. |
+| Hume AI | Speech, dialogue | `HUME_API_KEY` |
+| Cartesia | Speech, dialogue | `CARTESIA_API_KEY`; `CARTESIA_VERSION` is fixed to the supported `2026-08-14` contract. |
+| Resemble AI | Speech, dialogue | `RESEMBLE_API_KEY` |
+| OpenAI | Speech, dialogue | `OPENAI_API_KEY` |
+| Deepgram | Speech, dialogue | `DEEPGRAM_API_KEY` |
+| Google Cloud Text-to-Speech | Speech, dialogue | Application Default Credentials (ADC). For local file-based ADC, set `GOOGLE_APPLICATION_CREDENTIALS`. For metadata/workload-identity ADC, set `GOOGLE_CLOUD_TTS_ENABLED=true`. `GOOGLE_CLOUD_PROJECT` is an optional quota-project override. |
+| Google Cloud Lyria 2 | Music | ADC plus a required `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_MUSIC_ENABLED=true`, and current Vertex AI API/IAM/model access. `GOOGLE_CLOUD_MUSIC_LOCATION` defaults to `global`. Enabling Google TTS does not enable Lyria, and enabling Lyria does not enable TTS. |
+| Stability AI Stable Audio 2.5 | Music, sound effects | `STABILITY_API_KEY`; generation is credit-metered by Stability AI. |
+| Microsoft Azure Speech | Speech, dialogue | `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` |
 
 Gateway settings are also environment variables:
 
@@ -138,7 +157,8 @@ Gateway settings are also environment variables:
 | `VOXBRIDGE_AUDIO_DOWNLOAD_MAX_ITEMS` | `32` | Maximum number of generated file resources retained by one replica. |
 | `VOXBRIDGE_AUDIO_DOWNLOAD_MAX_BYTES` | `67108864` | Maximum total bytes retained for generated file downloads by one replica. |
 | `VOXBRIDGE_REQUEST_TIMEOUT_SECONDS` | `60` | Outbound provider timeout. |
-| `VOXBRIDGE_MUSIC_REQUEST_TIMEOUT_SECONDS` | `300` | Longer outbound timeout for ElevenLabs music generation. |
+| `VOXBRIDGE_MUSIC_REQUEST_TIMEOUT_SECONDS` | `300` | Longer outbound timeout for music and Stability AI audio generation. |
+| `VOXBRIDGE_SOUND_EFFECT_REQUEST_TIMEOUT_SECONDS` | `120` | Longer outbound timeout for ElevenLabs sound-effect generation. |
 | `VOXBRIDGE_ALLOWED_HOSTS` | loopback hosts | JSON array of Host-header patterns accepted by the MCP transport. |
 | `VOXBRIDGE_ALLOWED_ORIGINS` | loopback HTTP origins | JSON array of browser origins accepted by the MCP transport. |
 
@@ -195,8 +215,10 @@ The `0.0.0.0` bind exists only inside the container in this example; the host pu
 
 - Speed is validated against the selected vendor's current range, which is returned by `list_providers`.
 - ElevenLabs rejects explicit language selection on `eleven_multilingual_v2`; `eleven_v3` rejects speed, similarity boost, and speaker boost controls that it does not support. These model caveats are returned in `control_notes`.
-- ElevenLabs Music API use can require a paid plan or account entitlement. Music generation is billable, supports prompt or composition-plan input, and returns MP3 through VoxBridge; it is not a speech voice or voice-cloning feature.
-- Hume Octave 2 requires a saved voice. Hume delivery instructions currently require `model="octave-1"`; Octave 2 requests with instructions fail before any billable call.
+- ElevenLabs Music and Sound Effects API use can require a paid plan or account entitlement. Both are billable and are separate from speech and voice cloning.
+- Google Cloud Lyria is a separate, explicitly enabled music adapter. It requires a project with current Vertex AI access and returns instrumental WAV audio; Google Cloud Text-to-Speech remains a separate provider ID. Watermarking is provider-managed and VoxBridge does not expose a watermark control or assert watermark status in result metadata.
+- Stability AI Stable Audio is a separate music/sound-effect adapter and does not provide speech or dialogue. Successful generations consume Stability credits under the provider's current pricing.
+- Hume Octave 2 requires a saved voice. Hume delivery instructions currently require `model="octave-1"`; Octave 2 requests with instructions fail before any billable call. Hume states that its TTS and EVI APIs will shut down on November 13, 2026, so plan migration rather than treating this adapter as a long-term dependency.
 - Cartesia emotion values and volume are validated against the current `2026-08-14` contract; emotion is rejected for an explicitly non-English language.
 
 ## Checks
@@ -216,7 +238,7 @@ python scripts/smoke_mcp.py
 
 The MCP App source lives under `web/`; `npm ci` followed by `npm run build` regenerates the single-file HTML bundled into the Python package. Lint, unit tests, and successful wheel/source and UI builds validate repository mechanics. They do not validate provider credentials, live vendor APIs, account entitlements, content-policy compliance, or audio quality.
 
-For a live ElevenLabs Music acceptance check, intentionally generate one 3-second MP3 with a minimal prompt and `delivery="file"`, then read the returned resource and confirm non-empty `audio/mpeg` bytes. Run this only with the account owner's authorization because it can consume paid quota. Reuse that exact result for download or attachment checks instead of regenerating it.
+Live provider checks are intentionally outside credential-free CI. With the account owner's action-time authorization, exercise only the configured capabilities: one short speech sample, one two-segment dialogue for a provider reporting `supports_dialogue`, and the shortest practical music or sound-effect sample needed for each paid integration. Use `delivery="file"`, read the returned resource, and confirm non-empty bytes with the expected MIME type. Reuse that exact result for playback, download, attachment, and replay checks instead of regenerating it. Do not treat one provider's success as acceptance of another provider, and do not run speculative samples merely because credentials are present.
 
 Private-alpha downloads use opaque, short-lived MCP resource links backed by a bounded in-memory cache on the single gateway replica. The MCP App requests a host-mediated file save only when `ui/download-file` is advertised, so downloads need no public file URL. To preserve reliable in-widget playback, `both` includes a base64 copy of the generated bytes in model-hidden App metadata; this adds roughly one-third encoding overhead to the initial result. `materialize_audio_file` is separately capped because embedded tool results are expensive and powers the first stage of the user-initiated **Add file to ChatGPT** action; the verified resource is attached through `ui/update-model-context` in the second stage. The host may request approval. Links expire, and a deployment restart invalidates them. Longer production audio should use an app-only streaming helper or authenticated durable storage with short-lived downloads and lifecycle deletion.
 

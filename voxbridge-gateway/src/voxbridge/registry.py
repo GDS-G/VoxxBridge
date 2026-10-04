@@ -9,9 +9,11 @@ from voxbridge.providers.cartesia import CartesiaProvider
 from voxbridge.providers.deepgram import DeepgramProvider
 from voxbridge.providers.elevenlabs import ElevenLabsProvider
 from voxbridge.providers.google_cloud import GoogleCloudProvider
+from voxbridge.providers.google_lyria import GoogleLyriaProvider
 from voxbridge.providers.hume import HumeProvider
 from voxbridge.providers.openai_voice import OpenAIVoiceProvider
 from voxbridge.providers.resemble import ResembleProvider
+from voxbridge.providers.stability import StabilityAudioProvider
 
 
 def build_registry() -> dict[str, VoiceProvider]:
@@ -20,6 +22,7 @@ def build_registry() -> dict[str, VoiceProvider]:
             settings.elevenlabs_api_key,
             timeout=settings.voxbridge_request_timeout_seconds,
             music_timeout=settings.voxbridge_music_request_timeout_seconds,
+            sound_effect_timeout=settings.voxbridge_sound_effect_request_timeout_seconds,
         ),
         HumeProvider(settings.hume_api_key, timeout=settings.voxbridge_request_timeout_seconds),
         CartesiaProvider(
@@ -29,6 +32,11 @@ def build_registry() -> dict[str, VoiceProvider]:
         ),
         ResembleProvider(
             settings.resemble_api_key, timeout=settings.voxbridge_request_timeout_seconds
+        ),
+        StabilityAudioProvider(
+            settings.stability_api_key,
+            timeout=settings.voxbridge_request_timeout_seconds,
+            generation_timeout=settings.voxbridge_music_request_timeout_seconds,
         ),
         OpenAIVoiceProvider(
             settings.openai_api_key, timeout=settings.voxbridge_request_timeout_seconds
@@ -41,6 +49,14 @@ def build_registry() -> dict[str, VoiceProvider]:
             credentials_file=settings.google_application_credentials,
             enabled=settings.google_cloud_tts_enabled,
             timeout=settings.voxbridge_request_timeout_seconds,
+        ),
+        GoogleLyriaProvider(
+            settings.google_cloud_project,
+            credentials_file=settings.google_application_credentials,
+            enabled=settings.google_cloud_music_enabled,
+            location=settings.google_cloud_music_location,
+            timeout=settings.voxbridge_request_timeout_seconds,
+            music_timeout=settings.voxbridge_music_request_timeout_seconds,
         ),
         AzureSpeechProvider(
             settings.azure_speech_key,

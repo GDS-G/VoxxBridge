@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from voxbridge.models import MusicRequest, SpeechRequest, SpeechResult, Voice
+from voxbridge.models import (
+    MusicRequest,
+    SoundEffectRequest,
+    SpeechRequest,
+    SpeechResult,
+    Voice,
+)
 
 from .base import ProviderError, VoiceProvider
 
@@ -11,7 +17,12 @@ class ElevenLabsProvider(VoiceProvider):
     id = "elevenlabs"
     display_name = "ElevenLabs"
     default_model = "eleven_multilingual_v2"
-    capabilities = ("text_to_speech", "list_voices", "music_generation")
+    capabilities = (
+        "text_to_speech",
+        "list_voices",
+        "music_generation",
+        "sound_effect_generation",
+    )
     supported_formats = ("mp3", "wav")
     allowed_options = frozenset({"stability", "similarity_boost", "style", "use_speaker_boost"})
     max_text_chars = 5_000
@@ -25,10 +36,19 @@ class ElevenLabsProvider(VoiceProvider):
         "eleven_v3": "speed, similarity_boost, and use_speaker_boost are unavailable",
     }
     default_music_model = "music_v2_5"
+    default_music_length_ms = 30_000
     music_models = ("music_v1", "music_v2", "music_v2_5")
     music_supported_formats = ("mp3",)
     music_duration_range_ms = (3_000, 600_000)
     supports_music_composition_plans = True
+    default_sound_effect_model = "eleven_text_to_sound_v2"
+    default_sound_effect_prompt_influence = 0.3
+    sound_effect_models = ("eleven_text_to_sound_v2",)
+    sound_effect_supported_formats = ("mp3",)
+    sound_effect_duration_range_seconds = (0.5, 30.0)
+    max_sound_effect_prompt_chars = 450
+    supports_sound_effect_loop = True
+    supports_sound_effect_prompt_influence = True
 
     def __init__(
         self,
@@ -36,10 +56,12 @@ class ElevenLabsProvider(VoiceProvider):
         *,
         timeout: float = 60.0,
         music_timeout: float = 300.0,
+        sound_effect_timeout: float = 120.0,
     ) -> None:
         super().__init__(timeout=timeout)
         self.api_key = api_key
         self.music_timeout = music_timeout
+        self.sound_effect_timeout = sound_effect_timeout
 
     @property
     def configured(self) -> bool:
@@ -164,6 +186,8 @@ class ElevenLabsProvider(VoiceProvider):
             not isinstance(req.composition_plan, dict) or not req.composition_plan
         ):
             raise ProviderError("ElevenLabs composition_plan must be a non-empty object")
+        if req.negative_prompt is not None:
+            raise ProviderError("ElevenLabs music does not expose a separate negative_prompt")
         if req.model not in self.music_models:
             raise ProviderError("ElevenLabs music model must be music_v1, music_v2, or music_v2_5")
         if req.output_format not in self.music_supported_formats:
@@ -244,8 +268,13 @@ class ElevenLabsProvider(VoiceProvider):
             raise
 
         default_mime = "audio/mpeg"
-        returned_mime = r.headers.get("content-type", default_mime).split(";")[0]
-        mime = returned_mime if returned_mime.startswith("audio/") else default_mime
+        content_type = r.headers.get("content-type")
+        returned_mime = content_type.split(";")[0].strip().lower() if content_type else default_mime
+        if returned_mime == "application/octet-stream":
+            returned_mime = default_mime
+        elif not returned_mime.startswith("audio/"):
+            raise ProviderError("ElevenLabs returned an invalid music audio response")
+        mime = returned_mime
         self.validate_audio(r.content)
         return SpeechResult(
             audio=r.content,
@@ -259,5 +288,102 @@ class ElevenLabsProvider(VoiceProvider):
                 "music_length_ms": req.music_length_ms,
                 "force_instrumental": req.force_instrumental if req.prompt is not None else None,
                 "song_id": r.headers.get("song-id"),
+            },
+        )
+
+    def validate_sound_effect_request(self, req: SoundEffectRequest) -> None:
+        if not req.prompt.strip():
+            raise ProviderError("ElevenLabs sound-effect prompt cannot be empty")
+        if len(req.prompt) > self.max_sound_effect_prompt_chars:
+            raise ProviderError("ElevenLabs sound-effect prompt accepts at most 450 characters")
+        if req.model not in self.sound_effect_models:
+            raise ProviderError("ElevenLabs sound-effect model must be eleven_text_to_sound_v2")
+        if req.output_format not in self.sound_effect_supported_formats:
+            raise ProviderError("ElevenLabs sound-effect output must be mp3")
+        if req.duration_seconds is not None:
+            if isinstance(req.duration_seconds, bool) or not isinstance(
+                req.duration_seconds, (int, float)
+            ):
+                raise ProviderError("ElevenLabs sound-effect duration_seconds must be a number")
+            minimum, maximum = self.sound_effect_duration_range_seconds
+            if not minimum <= req.duration_seconds <= maximum:
+                raise ProviderError(
+                    "ElevenLabs sound-effect duration_seconds must be between 0.5 and 30"
+                )
+        if not isinstance(req.loop, bool):
+            raise ProviderError("ElevenLabs sound-effect loop must be a boolean")
+        if req.seed is not None:
+            raise ProviderError("ElevenLabs sound effects do not expose a seed control")
+        if req.prompt_influence is not None and (
+            isinstance(req.prompt_influence, bool)
+            or not isinstance(req.prompt_influence, (int, float))
+        ):
+            raise ProviderError(
+                "ElevenLabs sound-effect prompt_influence must be a number between 0 and 1"
+            )
+        if req.prompt_influence is not None and not 0 <= req.prompt_influence <= 1:
+            raise ProviderError(
+                "ElevenLabs sound-effect prompt_influence must be a number between 0 and 1"
+            )
+
+    async def generate_sound_effect(self, req: SoundEffectRequest) -> SpeechResult:
+        self.validate_sound_effect_request(req)
+        prompt_influence = 0.3 if req.prompt_influence is None else req.prompt_influence
+        payload: dict = {
+            "text": req.prompt,
+            "loop": req.loop,
+            "prompt_influence": prompt_influence,
+            "model_id": req.model,
+        }
+        if req.duration_seconds is not None:
+            payload["duration_seconds"] = req.duration_seconds
+
+        try:
+            r = await self._request(
+                "POST",
+                "https://api.elevenlabs.io/v1/sound-generation",
+                headers={**self._headers(), "Content-Type": "application/json"},
+                params={"output_format": "mp3_44100_128"},
+                json=payload,
+                timeout=self.sound_effect_timeout,
+            )
+        except ProviderError as exc:
+            if exc.status_code == 403:
+                raise ProviderError(
+                    "ElevenLabs rejected its credentials or Sound Effects API entitlement",
+                    status_code=exc.status_code,
+                    request_id=exc.request_id,
+                    retryable=exc.retryable,
+                ) from exc
+            if exc.status_code == 422:
+                raise ProviderError(
+                    "ElevenLabs rejected the sound-effect prompt or settings",
+                    status_code=exc.status_code,
+                    request_id=exc.request_id,
+                    retryable=exc.retryable,
+                ) from exc
+            raise
+
+        default_mime = "audio/mpeg"
+        content_type = r.headers.get("content-type")
+        returned_mime = content_type.split(";")[0].strip().lower() if content_type else default_mime
+        if returned_mime == "application/octet-stream":
+            returned_mime = default_mime
+        elif not returned_mime.startswith("audio/"):
+            raise ProviderError("ElevenLabs returned an invalid sound-effect audio response")
+        mime = returned_mime
+        self.validate_audio(r.content)
+        return SpeechResult(
+            audio=r.content,
+            mime_type=mime,
+            provider=self.id,
+            model=req.model,
+            request_id=r.headers.get("request-id"),
+            metadata={
+                "sound_effect": True,
+                "duration_seconds": req.duration_seconds,
+                "loop": req.loop,
+                "prompt_influence": prompt_influence,
+                "character_cost": r.headers.get("character-cost"),
             },
         )

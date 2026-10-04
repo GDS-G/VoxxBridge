@@ -1,6 +1,6 @@
 ---
 name: voice-generation
-description: Generate, play, and download realistic speech or compare voices across VoxBridge providers. Use when the user asks for TTS, narration, character dialogue, an audio file, voice comparison, voice selection, or provider-specific voice controls.
+description: Generate, play, and download realistic speech or compare voices across VoxBridge providers. Use when the user asks for TTS, narration, character dialogue, a spoken audio file, voice comparison, voice selection, or provider-specific voice controls.
 ---
 
 # VoxBridge voice generation
@@ -12,7 +12,7 @@ When the VoxBridge MCP gateway is connected:
 1. Call `list_providers` when provider availability or capabilities are unknown.
 2. Call `list_voices` before generation when the user has not provided an exact voice ID.
 3. For one voice, call `generate_speech` using the user's requested provider, `voice_id`, language, model, `output_format`, speed, performance direction, and `delivery` choice.
-4. For an ordered script with multiple voice IDs in one file, call `generate_dialogue` once. Put each turn in `segments` with its text and exact `voice_id`, plus optional `instructions`, `speed`, `language`, provider-specific `options`, and `pause_after_ms`. Preserve the requested order, use one provider and one global model, and explain that the combined developer-alpha output is PCM WAV. Do not emulate this by making unrelated tool calls and asking another tool to merge files.
+4. For an ordered script with multiple voice IDs in one file, select any configured speech provider whose `supports_dialogue` value is true, then call `generate_dialogue` once. This is not limited to ElevenLabs. Put each turn in `segments` with its text and exact `voice_id`, plus optional `instructions`, `speed`, `language`, provider-specific `options`, and `pause_after_ms`. Preserve the requested order, use one provider and one global model, and explain that the combined developer-alpha output is PCM WAV. Do not emulate this by making unrelated tool calls and asking another tool to merge files.
 5. Map delivery intent explicitly: use `playback` for “recite,” “read aloud,” “play,” or “preview”; use `file` for “download,” “save,” or “give me the audio file”; use `both` when the user requests both. When no delivery preference is stated, use the gateway default, `both`.
 6. Map natural-language performance direction into `instructions` only when `list_providers` reports support. Hume currently requires `model="octave-1"` for acting direction; OpenAI excludes `tts-1` and `tts-1-hd`. Respect each provider's `instructions_note`.
 7. Use `options_json` for documented provider-specific controls on `generate_speech`; use the per-segment `options` object on `generate_dialogue`. Do not invent parameters.

@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     )
     voxbridge_request_timeout_seconds: float = Field(default=60.0, gt=0, le=300.0)
     voxbridge_music_request_timeout_seconds: float = Field(default=300.0, gt=0, le=600.0)
+    voxbridge_sound_effect_request_timeout_seconds: float = Field(default=120.0, gt=0, le=600.0)
     voxbridge_allowed_hosts: list[str] = Field(
         default_factory=lambda: ["127.0.0.1:*", "localhost:*", "[::1]:*"]
     )
@@ -56,11 +57,14 @@ class Settings(BaseSettings):
     cartesia_api_key: str | None = None
     cartesia_version: Literal["2026-08-14"] = "2026-08-14"
     resemble_api_key: str | None = None
+    stability_api_key: str | None = None
     openai_api_key: str | None = None
     deepgram_api_key: str | None = None
     google_application_credentials: str | None = None
     google_cloud_project: str | None = None
     google_cloud_tts_enabled: bool = False
+    google_cloud_music_enabled: bool = False
+    google_cloud_music_location: Literal["global"] = "global"
     azure_speech_key: str | None = None
     azure_speech_region: str | None = None
 

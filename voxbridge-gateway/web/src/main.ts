@@ -47,7 +47,7 @@ const DEFAULT_MAX_VOXBRIDGE_CHATGPT_HANDOFF_BYTES = 8 * 1024 * 1024;
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 const app = new App(
-  { name: "VoxBridge Audio Delivery", version: "0.4.0" },
+  { name: "VoxBridge Audio Delivery", version: "0.5.0" },
   { availableDisplayModes: ["inline"] },
   { autoResize: true },
 );

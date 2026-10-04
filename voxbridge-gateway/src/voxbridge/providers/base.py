@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 import httpx
 
 from voxbridge import __version__
-from voxbridge.models import MusicRequest, SpeechRequest, SpeechResult, Voice
+from voxbridge.models import MusicRequest, SoundEffectRequest, SpeechRequest, SpeechResult, Voice
 
 
 class ProviderError(RuntimeError):
@@ -43,10 +43,20 @@ class VoiceProvider(ABC):
     control_notes: ClassVar[dict[str, str]] = {}
     base64_audio_response: bool = False
     default_music_model: str | None = None
+    default_music_length_ms: int | None = None
     music_models: tuple[str, ...] = ()
     music_supported_formats: tuple[str, ...] = ()
     music_duration_range_ms: tuple[int, int] | None = None
     supports_music_composition_plans: bool = False
+    default_sound_effect_model: str | None = None
+    default_sound_effect_duration_seconds: float | None = None
+    default_sound_effect_prompt_influence: float | None = None
+    sound_effect_models: tuple[str, ...] = ()
+    sound_effect_supported_formats: tuple[str, ...] = ()
+    sound_effect_duration_range_seconds: tuple[float, float] | None = None
+    max_sound_effect_prompt_chars: int | None = None
+    supports_sound_effect_loop: bool = False
+    supports_sound_effect_prompt_influence: bool = False
 
     def __init__(
         self, *, timeout: float = 60.0, max_response_bytes: int = 20 * 1024 * 1024
@@ -75,6 +85,12 @@ class VoiceProvider(ABC):
 
     async def generate_music(self, req: MusicRequest) -> SpeechResult:
         raise ProviderError(f"{self.display_name} does not support music generation")
+
+    def validate_sound_effect_request(self, req: SoundEffectRequest) -> None:
+        raise ProviderError(f"{self.display_name} does not support sound-effect generation")
+
+    async def generate_sound_effect(self, req: SoundEffectRequest) -> SpeechResult:
+        raise ProviderError(f"{self.display_name} does not support sound-effect generation")
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -217,6 +233,15 @@ class VoiceProvider(ABC):
             "capabilities": list(self.capabilities),
             "supported_formats": gateway_formats,
             "file_delivery_formats": gateway_formats,
+            "max_audio_bytes": self.max_audio_bytes,
+            "supports_dialogue": (
+                "text_to_speech" in self.capabilities and "wav" in self.supported_formats
+            ),
+            "dialogue_output_format": (
+                "wav"
+                if "text_to_speech" in self.capabilities and "wav" in self.supported_formats
+                else None
+            ),
             "max_text_chars": self.max_text_chars,
             "supports_instructions": self.supports_instructions,
             "instructions_note": self.instructions_note,
@@ -227,10 +252,22 @@ class VoiceProvider(ABC):
             "speed_range": [self.min_speed, self.max_speed] if self.supports_speed else None,
             "allowed_options": sorted(self.allowed_options),
             "default_music_model": self.default_music_model,
+            "default_music_length_ms": self.default_music_length_ms,
             "music_models": list(self.music_models),
             "music_supported_formats": list(self.music_supported_formats),
             "music_duration_range_ms": list(self.music_duration_range_ms)
             if self.music_duration_range_ms
             else None,
             "supports_music_composition_plans": self.supports_music_composition_plans,
+            "default_sound_effect_model": self.default_sound_effect_model,
+            "default_sound_effect_duration_seconds": (self.default_sound_effect_duration_seconds),
+            "default_sound_effect_prompt_influence": (self.default_sound_effect_prompt_influence),
+            "sound_effect_models": list(self.sound_effect_models),
+            "sound_effect_supported_formats": list(self.sound_effect_supported_formats),
+            "sound_effect_duration_range_seconds": list(self.sound_effect_duration_range_seconds)
+            if self.sound_effect_duration_range_seconds
+            else None,
+            "max_sound_effect_prompt_chars": self.max_sound_effect_prompt_chars,
+            "supports_sound_effect_loop": self.supports_sound_effect_loop,
+            "supports_sound_effect_prompt_influence": (self.supports_sound_effect_prompt_influence),
         }

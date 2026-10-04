@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from typing import ClassVar
 
 from voxbridge.models import SpeechRequest, SpeechResult, Voice
 
@@ -18,6 +19,11 @@ class HumeProvider(VoiceProvider):
     max_text_chars = 5_000
     supports_instructions = True
     instructions_note = "Delivery instructions currently require model 'octave-1'."
+    control_notes: ClassVar[dict[str, str]] = {
+        "service_sunset": (
+            "Hume states that its TTS and EVI APIs will shut down on November 13, 2026."
+        )
+    }
     supports_model = True
     supports_speed = True
     min_speed = 0.5

@@ -79,6 +79,7 @@ jobs:
           python -m json.tool ../voxbridge-plugin/.app.json > /dev/null
           test -f ../voxbridge-plugin/skills/voice-generation/SKILL.md
           test -f ../voxbridge-plugin/skills/music-generation/SKILL.md
+          test -f ../voxbridge-plugin/skills/sound-effect-generation/SKILL.md
           python - <<'PY'
           import json
           from pathlib import Path
@@ -91,6 +92,10 @@ jobs:
           for field in ("name", "version", "description", "author", "keywords"):
               assert root[field] == legacy[field], field
           assert root["extensions"]["com.openai"]["interface"] == legacy["interface"]
+          interface = root["extensions"]["com.openai"]["interface"]
+          assert len(interface["shortDescription"]) <= 30
+          assert isinstance(interface["defaultPrompt"], list)
+          assert 1 <= len(interface["defaultPrompt"]) <= 3
           assert root["extensions"]["com.openai"]["apps"] == "./.app.json"
           assert legacy["apps"] == "./.app.json"
           assert app == {

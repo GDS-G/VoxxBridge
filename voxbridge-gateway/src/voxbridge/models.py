@@ -34,6 +34,7 @@ class SpeechRequest:
 class MusicRequest:
     prompt: str | None = None
     composition_plan: dict[str, Any] | None = None
+    negative_prompt: str | None = None
     music_length_ms: int | None = None
     model: str = "music_v2_5"
     output_format: str = "mp3"
@@ -42,6 +43,17 @@ class MusicRequest:
     finetune_id: str | None = None
     respect_sections_durations: bool = True
     sign_with_c2pa: bool = False
+
+
+@dataclass(slots=True)
+class SoundEffectRequest:
+    prompt: str
+    duration_seconds: float | None = None
+    loop: bool = False
+    prompt_influence: float | None = None
+    seed: int | None = None
+    model: str = "eleven_text_to_sound_v2"
+    output_format: str = "mp3"
 
 
 @dataclass(slots=True)

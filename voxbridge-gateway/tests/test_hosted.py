@@ -73,6 +73,9 @@ def test_child_environments_separate_runtime_and_provider_secrets() -> None:
         {
             **TUNNEL_ENV,
             "ELEVENLABS_API_KEY": "provider-key-for-test",
+            "STABILITY_API_KEY": "stability-provider-key-for-test",
+            "GOOGLE_CLOUD_MUSIC_ENABLED": "true",
+            "GOOGLE_CLOUD_MUSIC_LOCATION": "global",
             "OPENAI_API_KEY": "openai-provider-key-for-test",
         }
     )
@@ -82,6 +85,9 @@ def test_child_environments_separate_runtime_and_provider_secrets() -> None:
     assert "MCP_SERVER_URL" not in gateway_env
     assert tunnel_env["CONTROL_PLANE_API_KEY"] == TUNNEL_ENV["CONTROL_PLANE_API_KEY"]
     assert "ELEVENLABS_API_KEY" not in tunnel_env
+    assert "STABILITY_API_KEY" not in tunnel_env
+    assert "GOOGLE_CLOUD_MUSIC_ENABLED" not in tunnel_env
+    assert "GOOGLE_CLOUD_MUSIC_LOCATION" not in tunnel_env
     assert "OPENAI_API_KEY" not in tunnel_env
 
 
