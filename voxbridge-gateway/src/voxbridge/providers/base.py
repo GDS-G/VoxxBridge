@@ -47,6 +47,11 @@ class VoiceProvider(ABC):
     music_models: tuple[str, ...] = ()
     music_supported_formats: tuple[str, ...] = ()
     music_duration_range_ms: tuple[int, int] | None = None
+    music_model_formats: ClassVar[dict[str, tuple[str, ...]]] = {}
+    music_model_duration_ranges_ms: ClassVar[dict[str, tuple[int, int] | None]] = {}
+    music_model_details: ClassVar[dict[str, dict[str, Any]]] = {}
+    music_steps_range: tuple[int, int] | None = None
+    music_cfg_scale_range: tuple[float, float] | None = None
     supports_music_composition_plans: bool = False
     default_sound_effect_model: str | None = None
     default_sound_effect_duration_seconds: float | None = None
@@ -54,6 +59,10 @@ class VoiceProvider(ABC):
     sound_effect_models: tuple[str, ...] = ()
     sound_effect_supported_formats: tuple[str, ...] = ()
     sound_effect_duration_range_seconds: tuple[float, float] | None = None
+    sound_effect_model_duration_ranges_seconds: ClassVar[dict[str, tuple[float, float] | None]] = {}
+    sound_effect_model_details: ClassVar[dict[str, dict[str, Any]]] = {}
+    sound_effect_steps_range: tuple[int, int] | None = None
+    sound_effect_cfg_scale_range: tuple[float, float] | None = None
     max_sound_effect_prompt_chars: int | None = None
     supports_sound_effect_loop: bool = False
     supports_sound_effect_prompt_influence: bool = False
@@ -258,6 +267,18 @@ class VoiceProvider(ABC):
             "music_duration_range_ms": list(self.music_duration_range_ms)
             if self.music_duration_range_ms
             else None,
+            "music_model_formats": {
+                model: list(formats) for model, formats in self.music_model_formats.items()
+            },
+            "music_model_duration_ranges_ms": {
+                model: list(duration_range) if duration_range else None
+                for model, duration_range in self.music_model_duration_ranges_ms.items()
+            },
+            "music_model_details": self.music_model_details,
+            "music_steps_range": list(self.music_steps_range) if self.music_steps_range else None,
+            "music_cfg_scale_range": list(self.music_cfg_scale_range)
+            if self.music_cfg_scale_range
+            else None,
             "supports_music_composition_plans": self.supports_music_composition_plans,
             "default_sound_effect_model": self.default_sound_effect_model,
             "default_sound_effect_duration_seconds": (self.default_sound_effect_duration_seconds),
@@ -266,6 +287,17 @@ class VoiceProvider(ABC):
             "sound_effect_supported_formats": list(self.sound_effect_supported_formats),
             "sound_effect_duration_range_seconds": list(self.sound_effect_duration_range_seconds)
             if self.sound_effect_duration_range_seconds
+            else None,
+            "sound_effect_model_duration_ranges_seconds": {
+                model: list(duration_range) if duration_range else None
+                for model, duration_range in self.sound_effect_model_duration_ranges_seconds.items()
+            },
+            "sound_effect_model_details": self.sound_effect_model_details,
+            "sound_effect_steps_range": list(self.sound_effect_steps_range)
+            if self.sound_effect_steps_range
+            else None,
+            "sound_effect_cfg_scale_range": list(self.sound_effect_cfg_scale_range)
+            if self.sound_effect_cfg_scale_range
             else None,
             "max_sound_effect_prompt_chars": self.max_sound_effect_prompt_chars,
             "supports_sound_effect_loop": self.supports_sound_effect_loop,

@@ -1553,6 +1553,9 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
         "music_v2",
         "music_v2_5",
         "lyria-002",
+        "lyria-3-clip-preview",
+        "lyria-3-pro-preview",
+        "stable-audio-3",
         "stable-audio-2.5",
     }
     assert set(music_schema["properties"]["output_format"]["anyOf"][0]["enum"]) == {
@@ -1563,6 +1566,14 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert music_schema["properties"]["force_instrumental"]["default"] is False
     assert music_schema["properties"]["respect_sections_durations"]["default"] is True
     assert music_schema["properties"]["sign_with_c2pa"]["default"] is False
+    assert any(
+        option.get("minimum") == 4 and option.get("maximum") == 8
+        for option in music_schema["properties"]["steps"]["anyOf"]
+    )
+    assert any(
+        option.get("minimum") == 1.0 and option.get("maximum") == 25.0
+        for option in music_schema["properties"]["cfg_scale"]["anyOf"]
+    )
     assert music_schema["properties"]["delivery"]["default"] == "both"
     assert set(music_schema["properties"]["delivery"]["enum"]) == {
         "playback",
@@ -1593,7 +1604,9 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     assert set(sound_effect_schema["required"]) == {"prompt"}
     assert sound_effect_schema["properties"]["provider"]["default"] == "elevenlabs"
     assert set(sound_effect_schema["properties"]["model"]["anyOf"][0]["enum"]) == {
+        "eleven_text_to_sound_v3",
         "eleven_text_to_sound_v2",
+        "stable-audio-3",
         "stable-audio-2.5",
     }
     assert sound_effect_schema["properties"]["model"]["default"] is None
@@ -1612,7 +1625,7 @@ async def test_mcp_in_process_discovery_in_current_and_legacy_modes(mode, monkey
     }
     duration_schema = sound_effect_schema["properties"]["duration_seconds"]
     assert any(
-        option.get("minimum") == 0.5 and option.get("maximum") == 190.0
+        option.get("minimum") == 0.5 and option.get("maximum") == 380.0
         for option in duration_schema["anyOf"]
     )
     assert sound_effect_schema["properties"]["prompt"]["maxLength"] == 10_000

@@ -2,7 +2,7 @@
 
 # This is the hosted private-alpha image. It keeps VoxBridge on container
 # loopback and reaches it through OpenAI's outbound-only Secure MCP Tunnel.
-ARG TUNNEL_CLIENT_IMAGE=ghcr.io/openai/tunnel-client:v0.0.15@sha256:119799b778ba8411a124f53588f9dc837fd62ba03e5fadf77d675123c92ab58e
+ARG TUNNEL_CLIENT_IMAGE=ghcr.io/openai/tunnel-client:v0.0.20@sha256:333005e6f5df2760f1b9f06fe873f5fc629554218f68c91d9cfbfe467d0fb42b
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 
 FROM ${TUNNEL_CLIENT_IMAGE} AS tunnel-client
@@ -38,6 +38,6 @@ RUN pip install --no-cache-dir . \
 USER voxbridge
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)" || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2)" || exit 1
 
 ENTRYPOINT ["voxbridge-hosted"]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 from voxbridge.models import SpeechRequest, SpeechResult, Voice
 
 from .base import ProviderError, VoiceProvider
@@ -32,6 +34,13 @@ class OpenAIVoiceProvider(VoiceProvider):
     instructions_note = "Instructions are not supported by the tts-1 or tts-1-hd models."
     supports_model = True
     supports_speed = True
+    control_notes: ClassVar[dict[str, str]] = {
+        "lifecycle_status": "scheduled_retirement",
+        "endpoint_retirement": (
+            "OpenAI /v1/audio/speech models are scheduled to retire on 2027-01-06; "
+            "the Realtime API is the announced replacement."
+        ),
+    }
 
     def __init__(self, api_key: str | None, *, timeout: float = 60.0) -> None:
         super().__init__(timeout=timeout)

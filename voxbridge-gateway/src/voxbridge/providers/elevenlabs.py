@@ -41,11 +41,26 @@ class ElevenLabsProvider(VoiceProvider):
     music_supported_formats = ("mp3",)
     music_duration_range_ms = (3_000, 600_000)
     supports_music_composition_plans = True
-    default_sound_effect_model = "eleven_text_to_sound_v2"
+    default_sound_effect_model = "eleven_text_to_sound_v3"
     default_sound_effect_prompt_influence = 0.3
-    sound_effect_models = ("eleven_text_to_sound_v2",)
+    sound_effect_models = ("eleven_text_to_sound_v3", "eleven_text_to_sound_v2")
     sound_effect_supported_formats = ("mp3",)
     sound_effect_duration_range_seconds = (0.5, 30.0)
+    sound_effect_model_duration_ranges_seconds: ClassVar[dict[str, tuple[float, float] | None]] = {
+        "eleven_text_to_sound_v3": (0.5, 30.0),
+        "eleven_text_to_sound_v2": (0.5, 30.0),
+    }
+    sound_effect_model_details: ClassVar[dict[str, dict[str, object]]] = {
+        "eleven_text_to_sound_v3": {
+            "status": "current",
+            "notes": "Improved multi-part prompt following, vocals, and musical sounds.",
+        },
+        "eleven_text_to_sound_v2": {
+            "status": "deprecated",
+            "removal_date": "2027-03-01",
+            "notes": "Retained only for explicit compatibility requests.",
+        },
+    }
     max_sound_effect_prompt_chars = 450
     supports_sound_effect_loop = True
     supports_sound_effect_prompt_influence = True
@@ -217,6 +232,10 @@ class ElevenLabsProvider(VoiceProvider):
             not req.finetune_id.strip() or len(req.finetune_id) > 100
         ):
             raise ProviderError("ElevenLabs music finetune_id must contain 1 to 100 characters")
+        if req.steps is not None:
+            raise ProviderError("ElevenLabs music does not expose a steps control")
+        if req.cfg_scale is not None:
+            raise ProviderError("ElevenLabs music does not expose a cfg_scale control")
         if not isinstance(req.respect_sections_durations, bool):
             raise ProviderError("ElevenLabs respect_sections_durations must be a boolean")
         if not isinstance(req.sign_with_c2pa, bool):
@@ -297,7 +316,10 @@ class ElevenLabsProvider(VoiceProvider):
         if len(req.prompt) > self.max_sound_effect_prompt_chars:
             raise ProviderError("ElevenLabs sound-effect prompt accepts at most 450 characters")
         if req.model not in self.sound_effect_models:
-            raise ProviderError("ElevenLabs sound-effect model must be eleven_text_to_sound_v2")
+            raise ProviderError(
+                "ElevenLabs sound-effect model must be eleven_text_to_sound_v3 or "
+                "eleven_text_to_sound_v2"
+            )
         if req.output_format not in self.sound_effect_supported_formats:
             raise ProviderError("ElevenLabs sound-effect output must be mp3")
         if req.duration_seconds is not None:
@@ -314,6 +336,10 @@ class ElevenLabsProvider(VoiceProvider):
             raise ProviderError("ElevenLabs sound-effect loop must be a boolean")
         if req.seed is not None:
             raise ProviderError("ElevenLabs sound effects do not expose a seed control")
+        if req.steps is not None:
+            raise ProviderError("ElevenLabs sound effects do not expose a steps control")
+        if req.cfg_scale is not None:
+            raise ProviderError("ElevenLabs sound effects do not expose a cfg_scale control")
         if req.prompt_influence is not None and (
             isinstance(req.prompt_influence, bool)
             or not isinstance(req.prompt_influence, (int, float))
@@ -385,5 +411,6 @@ class ElevenLabsProvider(VoiceProvider):
                 "loop": req.loop,
                 "prompt_influence": prompt_influence,
                 "character_cost": r.headers.get("character-cost"),
+                "model_deprecated": req.model == "eleven_text_to_sound_v2",
             },
         )

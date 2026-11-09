@@ -24,16 +24,19 @@ When the VoxBridge MCP gateway is connected:
 - `seed` is composition-plan-only and accepts 0–2,147,483,647. `finetune_id`, section-duration enforcement, and MP3 C2PA signing are ElevenLabs-specific.
 - Do not pass `negative_prompt`; ElevenLabs does not expose it as a separate control.
 
-## Google Cloud Lyria 2
+## Google Cloud Lyria 2 and Lyria 3 Preview
 
 - Use `provider="google-lyria"`, model `lyria-002`, and WAV output. The provider must be explicitly enabled with a Google Cloud project and appropriate Vertex AI access.
 - Use one US-English `prompt`; optional `negative_prompt` describes elements to exclude. `seed` is allowed. Do not pass a composition plan, duration, finetune, or C2PA control.
 - Lyria 2 returns one provider-fixed instrumental 48 kHz WAV. Do not promise a user-selected length, vocals, lyrics, or a specific watermark state; VoxBridge does not expose a watermark control or assert watermark status in result metadata.
+- Lyria 3 uses `lyria-3-clip-preview` (up to 30 seconds) or `lyria-3-pro-preview` (up to 184 seconds) and MP3 output through stateless requests to the global Interactions API. These models are preview features and require separate account access.
+- For Lyria 3, express duration, BPM, intensity, lyrics, instrumental intent, and song structure in the prompt. Do not pass `music_length_ms`, `negative_prompt`, `seed`, `steps`, or `cfg_scale`; the published REST contract does not expose those as separate controls. VoxBridge preserves the returned description and lyrics metadata when present.
 
-## Stability AI Stable Audio 2.5
+## Stability AI Stable Audio 3 and 2.5 compatibility
 
-- Use `provider="stability"`, model `stable-audio-2.5`, and MP3 or WAV. Prompts accept up to 10,000 characters.
-- Duration accepts 1,000–190,000 milliseconds and defaults to a bounded 30,000 milliseconds. `seed` accepts 0–4,294,967,294. MP3 can use the full provider range; for WAV, obey `wav_duration_max_seconds_for_audio_limit` from `list_providers` because VoxBridge rejects a request that would exceed its configured byte cap before making a paid call.
+- Use `provider="stability"`; the default is `stable-audio-3`, while `stable-audio-2.5` remains available for synchronous compatibility. Both support MP3 or WAV and prompts up to 10,000 characters.
+- Stable Audio 3 duration accepts 1,000–380,000 milliseconds; 2.5 accepts 1,000–190,000. Both default to a bounded 30,000 milliseconds. `seed` accepts 0–4,294,967,294, `steps` accepts 4–8, and `cfg_scale` accepts 1–25. Stable Audio 3 is asynchronous; VoxBridge submits once and performs bounded result polling without regenerating.
+- MP3 can use each model's full provider range. For WAV, obey `wav_duration_max_seconds_for_audio_limit` from `list_providers` because VoxBridge rejects a request that would exceed its configured byte cap before making a paid call.
 - The API does not expose a separate `negative_prompt`, `force_instrumental`, composition plan, finetune, or C2PA control. Put desired vocals, instrumental-only intent, structure, mood, and exclusions directly in the prompt.
 
 Treat every result as synthetic AI-generated music. Do not promise copyright ownership, royalty-free status, commercial clearance, or a particular license. The user remains responsible for the selected provider's current terms, account plan, applicable law, and rights in prompts, lyrics, samples, and outputs. Avoid requests that copy copyrighted lyrics or target a protected song, recording, or living artist too closely; offer a high-level genre, instrumentation, era, mood, and structure description instead.

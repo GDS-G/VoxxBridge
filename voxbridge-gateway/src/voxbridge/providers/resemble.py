@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from typing import ClassVar
 
 from voxbridge.models import SpeechRequest, SpeechResult, Voice
 
@@ -16,6 +17,12 @@ class ResembleProvider(VoiceProvider):
     allowed_options = frozenset({"use_hd", "sample_rate"})
     max_text_chars = 3_000
     base64_audio_response = True
+    control_notes: ClassVar[dict[str, str]] = {
+        "lifecycle_status": "legacy_only",
+        "hosted_generation_access": (
+            "Resemble hosted generation is retained only for eligible historical accounts."
+        ),
+    }
 
     def __init__(self, api_key: str | None, *, timeout: float = 60.0) -> None:
         super().__init__(timeout=timeout)

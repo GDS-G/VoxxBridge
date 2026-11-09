@@ -434,7 +434,7 @@ async def test_elevenlabs_sound_effect_contract_and_result_metadata():
             "text": "Soft rain on a canvas tent with distant thunder",
             "loop": True,
             "prompt_influence": 0.7,
-            "model_id": "eleven_text_to_sound_v2",
+            "model_id": "eleven_text_to_sound_v3",
             "duration_seconds": 6.5,
         }
         assert request.extensions["timeout"] == {
@@ -469,7 +469,7 @@ async def test_elevenlabs_sound_effect_contract_and_result_metadata():
     assert result.audio == b"ID3-eleven-sound-effect"
     assert result.mime_type == "audio/mpeg"
     assert result.provider == "elevenlabs"
-    assert result.model == "eleven_text_to_sound_v2"
+    assert result.model == "eleven_text_to_sound_v3"
     assert result.request_id == "sound-effect-request-1"
     assert result.metadata == {
         "sound_effect": True,
@@ -477,6 +477,7 @@ async def test_elevenlabs_sound_effect_contract_and_result_metadata():
         "loop": True,
         "prompt_influence": 0.7,
         "character_cost": "260",
+        "model_deprecated": False,
     }
 
 
@@ -488,7 +489,7 @@ async def test_elevenlabs_sound_effect_omits_auto_duration():
             "text": "A single wooden knock",
             "loop": False,
             "prompt_influence": 0.3,
-            "model_id": "eleven_text_to_sound_v2",
+            "model_id": "eleven_text_to_sound_v3",
         }
         return httpx.Response(200, content=b"ID3-knock")
 
@@ -534,7 +535,10 @@ async def test_elevenlabs_sound_effect_rejects_non_audio_success_response():
         ),
         (
             SoundEffectRequest(prompt="Knock", model="sound-v3"),
-            "ElevenLabs sound-effect model must be eleven_text_to_sound_v2",
+            (
+                "ElevenLabs sound-effect model must be eleven_text_to_sound_v3 or "
+                "eleven_text_to_sound_v2"
+            ),
         ),
         (
             SoundEffectRequest(prompt="Knock", output_format="wav"),
@@ -1459,6 +1463,86 @@ async def test_google_lyria_music_contract_and_result_metadata(monkeypatch):
     }
 
 
+async def test_google_lyria3_interactions_contract_and_metadata(monkeypatch):
+    provider = GoogleLyriaProvider("project-123", enabled=True, music_timeout=91.0)
+    auth = AsyncMock(return_value={"Authorization": "Bearer google-token"})
+    monkeypatch.setattr(provider, "_auth_headers", auth)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == httpx.URL(
+            "https://aiplatform.googleapis.com/v1/projects/project-123/locations/global/"
+            "interactions"
+        )
+        assert body(request) == {
+            "model": "lyria-3-pro-preview",
+            "store": False,
+            "input": [
+                {
+                    "type": "user_input",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "A warm cinematic theme Instrumental only; do not include "
+                                "vocals or lyrics."
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+        return httpx.Response(
+            200,
+            json={
+                "id": "interaction-1",
+                "status": "completed",
+                "model": "lyria-3-pro-preview",
+                "steps": [
+                    {
+                        "type": "model_output",
+                        "content": [{"type": "text", "text": "Generated lyrics"}],
+                    },
+                    {
+                        "type": "model_output",
+                        "content": [{"type": "text", "text": "Generated description"}],
+                    },
+                    {
+                        "type": "model_output",
+                        "content": [
+                            {
+                                "type": "audio",
+                                "mime_type": "audio/mpeg",
+                                "data": base64.b64encode(b"ID3-lyria-3").decode(),
+                            }
+                        ],
+                    },
+                ],
+            },
+            headers={"x-goog-request-id": "lyria3-request-1"},
+        )
+
+    await install_transport(provider, handler)
+    try:
+        result = await provider.generate_music(
+            MusicRequest(
+                prompt="A warm cinematic theme",
+                model="lyria-3-pro-preview",
+                output_format="mp3",
+                force_instrumental=True,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert result.audio == b"ID3-lyria-3"
+    assert result.mime_type == "audio/mpeg"
+    assert result.request_id == "lyria3-request-1"
+    assert result.metadata["interaction_id"] == "interaction-1"
+    assert result.metadata["lyrics"] == "Generated lyrics"
+    assert result.metadata["description"] == "Generated description"
+    assert result.metadata["preview"] is True
+
+
 @pytest.mark.parametrize(
     ("music_request", "message"),
     [
@@ -1582,11 +1666,321 @@ async def test_stability_music_contract_and_result_metadata():
     assert result.metadata == {
         "duration_seconds": 4.0,
         "seed": 4_294_967_294,
-        "credits_per_successful_generation": 20,
+        "steps": None,
+        "cfg_scale": None,
+        "generation_id": None,
+        "api_mode": "synchronous",
         "music": True,
         "music_mode": "prompt",
         "music_length_ms": 4_000,
     }
+
+
+async def test_stability_audio3_submits_and_polls_with_current_controls():
+    provider = StabilityAudioProvider(
+        "stability-secret",
+        generation_timeout=82.0,
+        result_poll_interval_seconds=0,
+    )
+    calls = 0
+    generation_id = "a" * 64
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if request.method == "POST":
+            assert request.url == httpx.URL(
+                "https://api.stability.ai/v2beta/audio/stable-audio/text-to-audio"
+            )
+            assert request.headers["accept"] == "application/json"
+            multipart = request.content
+            for name, value in (
+                (b"model", b"stable-audio-3"),
+                (b"duration", b"30.0"),
+                (b"steps", b"8"),
+                (b"cfg_scale", b"4.5"),
+                (b"output_format", b"mp3"),
+            ):
+                assert b'name="' + name + b'"' in multipart
+                assert value in multipart
+            return httpx.Response(202, json={"id": generation_id})
+        assert request.url == httpx.URL(
+            f"https://api.stability.ai/v2beta/audio/results/{generation_id}"
+        )
+        assert request.headers["accept"] == "audio/*"
+        if calls == 2:
+            return httpx.Response(202, json={"status": "in-progress"})
+        return httpx.Response(
+            200,
+            content=b"ID3-stable-audio-3",
+            headers={"content-type": "audio/mpeg", "x-request-id": "stable3-result"},
+        )
+
+    await install_transport(provider, handler)
+    try:
+        result = await provider.generate_music(
+            MusicRequest(
+                prompt="A restrained cinematic bed",
+                music_length_ms=30_000,
+                model="stable-audio-3",
+                output_format="mp3",
+                steps=8,
+                cfg_scale=4.5,
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert calls == 3
+    assert result.audio == b"ID3-stable-audio-3"
+    assert result.metadata["generation_id"] == generation_id
+    assert result.metadata["api_mode"] == "asynchronous"
+    assert result.metadata["steps"] == 8
+    assert result.metadata["cfg_scale"] == 4.5
+
+
+async def test_stability_audio3_retries_transient_poll_failures_without_resubmitting(
+    monkeypatch,
+):
+    provider = StabilityAudioProvider(
+        "stability-secret",
+        music_timeout=82.0,
+        result_poll_interval_seconds=0.25,
+        result_poll_max_backoff_seconds=1.0,
+    )
+    generation_id = "c" * 64
+    post_calls = 0
+    get_calls = 0
+    poll_results = [429, 503, "timeout", "network", 200]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_calls, get_calls
+        if request.method == "POST":
+            post_calls += 1
+            return httpx.Response(202, json={"id": generation_id})
+
+        get_calls += 1
+        result = poll_results[get_calls - 1]
+        if result == "timeout":
+            raise httpx.ReadTimeout("transient poll timeout", request=request)
+        if result == "network":
+            raise httpx.ConnectError("transient poll network error", request=request)
+        if result == 200:
+            return httpx.Response(
+                200,
+                content=b"ID3-stable-audio-after-retries",
+                headers={"content-type": "audio/mpeg"},
+            )
+        return httpx.Response(result, headers={"x-request-id": f"poll-{get_calls}"})
+
+    sleep = AsyncMock()
+    monkeypatch.setattr("voxbridge.providers.stability.asyncio.sleep", sleep)
+    await install_transport(provider, handler)
+    try:
+        result = await provider.generate_music(
+            MusicRequest(
+                prompt="A short resilient cue",
+                model="stable-audio-3",
+                output_format="mp3",
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert post_calls == 1
+    assert get_calls == 5
+    assert result.audio == b"ID3-stable-audio-after-retries"
+    assert sleep.await_args_list == [call(0.25), call(0.5), call(1.0), call(1.0)]
+
+
+async def test_stability_audio3_identical_retry_resumes_accepted_generation():
+    provider = StabilityAudioProvider(
+        "stability-secret",
+        result_poll_interval_seconds=0,
+        result_poll_max_attempts=1,
+    )
+    generation_id = "d" * 64
+    post_calls = 0
+    get_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_calls, get_calls
+        if request.method == "POST":
+            post_calls += 1
+            return httpx.Response(202, json={"id": generation_id})
+        get_calls += 1
+        if get_calls == 1:
+            return httpx.Response(202, json={"status": "in-progress"})
+        return httpx.Response(
+            200,
+            content=b"ID3-resumed-stable-audio",
+            headers={"content-type": "audio/mpeg"},
+        )
+
+    request = MusicRequest(
+        prompt="An identical cue that should resume",
+        model="stable-audio-3",
+        output_format="mp3",
+    )
+    await install_transport(provider, handler)
+    try:
+        with pytest.raises(ProviderError, match="timed out while waiting") as exc_info:
+            await provider.generate_music(request)
+        result = await provider.generate_music(request)
+    finally:
+        await provider.aclose()
+
+    assert exc_info.value.retryable is True
+    assert post_calls == 1
+    assert get_calls == 2
+    assert result.audio == b"ID3-resumed-stable-audio"
+    assert not provider._generation_resume_cache
+
+
+async def test_stability_audio3_404_clears_resume_entry_before_retry():
+    provider = StabilityAudioProvider(
+        "stability-secret",
+        result_poll_interval_seconds=0,
+    )
+    post_calls = 0
+    get_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_calls, get_calls
+        if request.method == "POST":
+            post_calls += 1
+            return httpx.Response(202, json={"id": str(post_calls) * 64})
+        get_calls += 1
+        if get_calls == 1:
+            return httpx.Response(404, headers={"x-request-id": "expired-result"})
+        return httpx.Response(
+            200,
+            content=b"ID3-new-stable-audio-generation",
+            headers={"content-type": "audio/mpeg"},
+        )
+
+    request = MusicRequest(
+        prompt="A cue whose provider result expired",
+        model="stable-audio-3",
+        output_format="mp3",
+    )
+    await install_transport(provider, handler)
+    try:
+        with pytest.raises(ProviderError, match="could not find") as exc_info:
+            await provider.generate_music(request)
+        result = await provider.generate_music(request)
+    finally:
+        await provider.aclose()
+
+    assert exc_info.value.status_code == 404
+    assert post_calls == 2
+    assert get_calls == 2
+    assert result.audio == b"ID3-new-stable-audio-generation"
+
+
+async def test_stability_audio3_resume_cache_is_hashed_bounded_and_expires(monkeypatch):
+    provider = StabilityAudioProvider(
+        "stability-secret",
+        generation_resume_ttl_seconds=10.0,
+        generation_resume_max_items=2,
+    )
+    now = [100.0]
+    monkeypatch.setattr("voxbridge.providers.stability.time.monotonic", lambda: now[0])
+
+    def cache_key(prompt: str) -> str:
+        return provider._generation_resume_key(
+            "https://api.stability.ai/v2beta/audio/stable-audio/text-to-audio",
+            {
+                "prompt": (None, prompt),
+                "duration": (None, "30.0"),
+                "model": (None, "stable-audio-3"),
+                "output_format": (None, "mp3"),
+            },
+        )
+
+    first_key = cache_key("private prompt one")
+    second_key = cache_key("private prompt two")
+    third_key = cache_key("private prompt three")
+    assert len(first_key) == 64
+    assert "private prompt" not in first_key
+
+    try:
+        provider._remember_generation_id(first_key, "a" * 64)
+        provider._remember_generation_id(second_key, "b" * 64)
+        provider._remember_generation_id(third_key, "c" * 64)
+        assert list(provider._generation_resume_cache) == [second_key, third_key]
+
+        now[0] = 111.0
+        assert provider._cached_generation_id(second_key) is None
+        assert not provider._generation_resume_cache
+    finally:
+        await provider.aclose()
+
+
+async def test_stability_audio3_polling_is_bounded():
+    provider = StabilityAudioProvider(
+        "stability-secret",
+        result_poll_interval_seconds=0,
+        result_poll_max_attempts=2,
+    )
+
+    generation_id = "b" * 64
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, json={"id": generation_id})
+        return httpx.Response(202, json={"status": "in-progress"})
+
+    await install_transport(provider, handler)
+    try:
+        with pytest.raises(ProviderError, match="timed out while waiting") as exc_info:
+            await provider.generate_sound_effect(
+                SoundEffectRequest(
+                    prompt="A short impact",
+                    model="stable-audio-3",
+                    output_format="mp3",
+                )
+            )
+    finally:
+        await provider.aclose()
+
+    assert exc_info.value.retryable is True
+
+
+async def test_stability_uses_separate_music_and_sound_effect_deadlines():
+    provider = StabilityAudioProvider(
+        "stability-secret",
+        music_timeout=91.0,
+        sound_effect_timeout=37.0,
+    )
+    observed_timeouts: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeout = request.extensions["timeout"]
+        observed_timeouts.append(timeout["read"])
+        return httpx.Response(200, content=b"ID3-stability-audio")
+
+    await install_transport(provider, handler)
+    try:
+        await provider.generate_music(
+            MusicRequest(
+                prompt="A short music cue",
+                model="stable-audio-2.5",
+                output_format="mp3",
+            )
+        )
+        await provider.generate_sound_effect(
+            SoundEffectRequest(
+                prompt="A short sound effect",
+                model="stable-audio-2.5",
+                output_format="mp3",
+            )
+        )
+    finally:
+        await provider.aclose()
+
+    assert observed_timeouts[0] == pytest.approx(91.0, abs=0.01)
+    assert observed_timeouts[1] == pytest.approx(37.0, abs=0.01)
 
 
 async def test_stability_sound_effect_contract_and_result_metadata():
@@ -1618,7 +2012,10 @@ async def test_stability_sound_effect_contract_and_result_metadata():
     assert result.metadata == {
         "duration_seconds": 5.0,
         "seed": None,
-        "credits_per_successful_generation": 20,
+        "steps": None,
+        "cfg_scale": None,
+        "generation_id": None,
+        "api_mode": "synchronous",
         "sound_effect": True,
     }
 

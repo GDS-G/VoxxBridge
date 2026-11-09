@@ -290,6 +290,10 @@ def _generation_replay_key(
                 normalized["model"] = getattr(selected_provider, "default_music_model", None)
             if normalized.get("output_format") is None:
                 formats = getattr(selected_provider, "music_supported_formats", ())
+                effective_model = normalized.get("model")
+                formats = getattr(selected_provider, "music_model_formats", {}).get(
+                    effective_model, formats
+                )
                 normalized["output_format"] = formats[0] if formats else None
         if normalized.get("composition_plan_json") is not None:
             try:
@@ -953,8 +957,9 @@ async def generate_music(
             description=(
                 "ElevenLabs prompt-mode duration from 3,000 to 600,000 milliseconds. "
                 "When omitted for ElevenLabs, VoxBridge uses 30,000 milliseconds. "
-                "Stability AI accepts 1,000 to 190,000 milliseconds and defaults to 30,000. "
-                "Google Cloud Lyria uses a provider-fixed duration and requires omission."
+                "Stability Stable Audio 3 accepts 1,000 to 380,000 milliseconds; 2.5 accepts "
+                "up to 190,000, and both default to 30,000. Google Lyria 2 is fixed-duration; "
+                "Lyria 3 uses duration instructions in the prompt."
             ),
         ),
     ] = None,
@@ -963,8 +968,8 @@ async def generate_music(
         Field(
             max_length=10_000,
             description=(
-                "Optional Google Cloud Lyria description of elements to exclude. "
-                "ElevenLabs and Stability AI do not expose this separate control."
+                "Optional Google Lyria 2 description of elements to exclude. Lyria 3, "
+                "ElevenLabs, and Stability AI do not expose this separate control."
             ),
         ),
     ] = None,
@@ -973,6 +978,9 @@ async def generate_music(
         "music_v2",
         "music_v2_5",
         "lyria-002",
+        "lyria-3-clip-preview",
+        "lyria-3-pro-preview",
+        "stable-audio-3",
         "stable-audio-2.5",
     ]
     | None = None,
@@ -982,6 +990,23 @@ async def generate_music(
     finetune_id: Annotated[str | None, Field(min_length=1, max_length=100)] = None,
     respect_sections_durations: bool = True,
     sign_with_c2pa: bool = False,
+    steps: Annotated[
+        int | None,
+        Field(
+            ge=4,
+            le=8,
+            description="Optional Stability Stable Audio diffusion steps (4 to 8).",
+        ),
+    ] = None,
+    cfg_scale: Annotated[
+        float | None,
+        Field(
+            ge=1.0,
+            le=25.0,
+            allow_inf_nan=False,
+            description="Optional Stability Stable Audio prompt-adherence scale (1 to 25).",
+        ),
+    ] = None,
     delivery: Literal["playback", "file", "both"] = "both",
     provider: str = "elevenlabs",
     ctx: Context | None = None,
@@ -992,13 +1017,13 @@ async def generate_music(
     `composition_plan_json`, never both. Prompt mode defaults to a bounded 30-second
     generation when `music_length_ms` is omitted. `force_instrumental` and duration are
     prompt-only; `seed` is composition-plan-only. Google Cloud Lyria accepts a US-English
-    prompt plus optional `negative_prompt` and `seed`, produces one provider-fixed
-    instrumental WAV clip, and requires its own explicitly enabled provider. Omitted model
-    and format values resolve from the selected provider. Music generation is billable and
-    may be rejected for entitlement or content-policy reasons. Stability AI Stable Audio
-    2.5 accepts a prompt, optional seed, 1-to-190-second duration, and MP3 or WAV;
-    VoxBridge uses a bounded 30-second default when its duration is omitted. Delivery and
-    exact-file attachment behavior match generate_speech and generate_dialogue.
+    prompt plus optional `negative_prompt` and `seed`, and produces one fixed-duration WAV.
+    The Lyria 3 Clip and Pro preview models use MP3 and take duration, BPM, intensity,
+    lyrics, instrumental intent, and structure through the prompt. Omitted model and format
+    values resolve from the selected provider. Stable Audio 3 is the Stability default and
+    supports 1-to-380-second MP3 or WAV output, optional seed, 4-to-8 steps, and cfg_scale
+    from 1 to 25; Stable Audio 2.5 remains available with a 190-second maximum. Music
+    generation is billable and may be rejected for entitlement or content-policy reasons.
     """
 
     _validate_delivery(delivery)
@@ -1017,9 +1042,10 @@ async def generate_music(
     if not effective_model:
         raise ToolError(f"{p.display_name} does not declare a default music model")
     supported_music_formats = getattr(p, "music_supported_formats", ())
-    effective_output_format = output_format or (
-        supported_music_formats[0] if supported_music_formats else None
+    model_formats = getattr(p, "music_model_formats", {}).get(
+        effective_model, supported_music_formats
     )
+    effective_output_format = output_format or (model_formats[0] if model_formats else None)
     if not effective_output_format:
         raise ToolError(f"{p.display_name} does not declare a music output format")
     effective_length_ms = (
@@ -1039,6 +1065,8 @@ async def generate_music(
         finetune_id=finetune_id,
         respect_sections_durations=respect_sections_durations,
         sign_with_c2pa=sign_with_c2pa,
+        steps=steps,
+        cfg_scale=cfg_scale,
     )
     try:
         p.validate_music_request(request)
@@ -1092,11 +1120,12 @@ async def generate_sound_effect(
         float | None,
         Field(
             ge=0.5,
-            le=190.0,
+            le=380.0,
             allow_inf_nan=False,
             description=(
-                "Optional duration. ElevenLabs accepts 0.5 to 30 seconds; Stability AI "
-                "accepts 1 to 190 seconds and defaults to a bounded 5 seconds in VoxBridge."
+                "Optional duration. ElevenLabs accepts 0.5 to 30 seconds. Stability Stable "
+                "Audio 3 accepts 1 to 380 seconds; 2.5 accepts up to 190 seconds; both "
+                "default to a bounded 5 seconds in VoxBridge."
             ),
         ),
     ] = None,
@@ -1114,7 +1143,15 @@ async def generate_sound_effect(
         ),
     ] = None,
     seed: Annotated[int | None, Field(ge=0, le=4_294_967_294)] = None,
-    model: Literal["eleven_text_to_sound_v2", "stable-audio-2.5"] | None = None,
+    steps: Annotated[int | None, Field(ge=4, le=8)] = None,
+    cfg_scale: Annotated[float | None, Field(ge=1.0, le=25.0, allow_inf_nan=False)] = None,
+    model: Literal[
+        "eleven_text_to_sound_v3",
+        "eleven_text_to_sound_v2",
+        "stable-audio-3",
+        "stable-audio-2.5",
+    ]
+    | None = None,
     output_format: Literal["mp3", "wav"] | None = None,
     delivery: Literal["playback", "file", "both"] = "both",
     provider: str = "elevenlabs",
@@ -1122,13 +1159,13 @@ async def generate_sound_effect(
 ) -> Annotated[CallToolResult, SpeechDeliveryMetadata]:
     """Generate a synthetic sound effect for playback, file download, or both.
 
-    ElevenLabs supports prompts up to 450 characters, optional 0.5-to-30-second duration,
-    seamless looping, and prompt-influence control. Stability AI Stable Audio 2.5 supports
-    prompts up to 10,000 characters, 1-to-190-second MP3 or WAV output, and an optional seed,
-    but not the loop or prompt-influence controls. Omitted model and format values resolve
-    from the selected provider. Each generation can consume provider quota. Delivery,
-    download, exact-file materialization, and short-window approval replay protection match
-    speech, dialogue, and music.
+    ElevenLabs SFX v3 is the default and supports prompts up to 450 characters, optional
+    0.5-to-30-second duration, seamless looping, and prompt-influence control; deprecated
+    v2 remains available only when explicitly selected. Stability Stable Audio 3 supports
+    prompts up to 10,000 characters, 1-to-380-second MP3 or WAV, optional seed, steps, and
+    cfg_scale; Stable Audio 2.5 remains available with a 190-second maximum. Stability does
+    not expose the loop or prompt-influence controls. Omitted model and format values resolve
+    from the selected provider. Each generation can consume provider quota.
     """
 
     _validate_delivery(delivery)
@@ -1162,6 +1199,8 @@ async def generate_sound_effect(
         seed=seed,
         model=effective_model,
         output_format=effective_output_format,
+        steps=steps,
+        cfg_scale=cfg_scale,
     )
     try:
         p.validate_sound_effect_request(request)

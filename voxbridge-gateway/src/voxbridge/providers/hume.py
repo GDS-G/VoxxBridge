@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import ClassVar
 
 from voxbridge.models import SpeechRequest, SpeechResult, Voice
 
 from .base import ProviderError, VoiceProvider
+
+_HUME_TTS_SUNSET_UTC = datetime(2026, 11, 13, 5, 1, tzinfo=UTC)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class HumeProvider(VoiceProvider):
@@ -20,9 +28,8 @@ class HumeProvider(VoiceProvider):
     supports_instructions = True
     instructions_note = "Delivery instructions currently require model 'octave-1'."
     control_notes: ClassVar[dict[str, str]] = {
-        "service_sunset": (
-            "Hume states that its TTS and EVI APIs will shut down on November 13, 2026."
-        )
+        "lifecycle_status": "scheduled_shutdown",
+        "service_end": "Hume TTS and EVI are scheduled to end on 2026-11-13 at 00:01 EST.",
     }
     supports_model = True
     supports_speed = True
@@ -30,9 +37,16 @@ class HumeProvider(VoiceProvider):
     max_speed = 2.0
     base64_audio_response = True
 
-    def __init__(self, api_key: str | None, *, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        api_key: str | None,
+        *,
+        timeout: float = 60.0,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
         super().__init__(timeout=timeout)
         self.api_key = api_key
+        self._now = now or _utc_now
 
     @property
     def configured(self) -> bool:
@@ -43,8 +57,18 @@ class HumeProvider(VoiceProvider):
             raise ProviderError("Hume is not configured")
         return {"X-Hume-Api-Key": self.api_key}
 
+    def _ensure_service_available(self) -> None:
+        now = self._now()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        if now.astimezone(UTC) >= _HUME_TTS_SUNSET_UTC:
+            raise ProviderError("Hume TTS reached its announced service end on November 13, 2026")
+
     async def list_voices(self, *, language: str | None = None, limit: int = 50) -> list[Voice]:
-        voices: list[Voice] = []
+        if limit <= 0:
+            return []
+        self._ensure_service_available()
+        voices_by_source: list[list[Voice]] = []
         for source in ("HUME_AI", "CUSTOM_VOICE"):
             params: dict[str, str | int | bool] = {
                 "provider": source,
@@ -58,15 +82,35 @@ class HumeProvider(VoiceProvider):
             data = self.parse_json(r)
             if not isinstance(data, dict):
                 raise ProviderError("Hume returned an invalid voice list")
-            for v in data.get("voices_page", []):
-                voices.append(
+            source_voices: list[Voice] = []
+            for v in data.get("voices_page") or []:
+                voice_id = str(v.get("id") or "").strip()
+                if not voice_id:
+                    continue
+                source_voices.append(
                     Voice(
-                        v.get("id", ""),
+                        voice_id,
                         v.get("name", ""),
                         self.id,
                         metadata={"voice_provider": v.get("provider", source)},
                     )
                 )
+            voices_by_source.append(source_voices)
+
+        # Interleave stock and custom voices so a full HUME_AI page cannot starve
+        # CUSTOM_VOICE results. Preserve source ordering and return each voice ID once.
+        voices: list[Voice] = []
+        seen_ids: set[str] = set()
+        max_source_size = max((len(items) for items in voices_by_source), default=0)
+        for index in range(max_source_size):
+            for source_voices in voices_by_source:
+                if index >= len(source_voices):
+                    continue
+                voice = source_voices[index]
+                if voice.id in seen_ids:
+                    continue
+                seen_ids.add(voice.id)
+                voices.append(voice)
                 if len(voices) >= limit:
                     return voices
         return voices
@@ -110,6 +154,7 @@ class HumeProvider(VoiceProvider):
             "num_generations": 1,
             "version": "2" if model == "octave-2" else "1",
         }
+        self._ensure_service_available()
         r = await self._request(
             "POST",
             "https://api.hume.ai/v0/tts",

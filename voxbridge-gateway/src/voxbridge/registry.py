@@ -36,7 +36,8 @@ def build_registry() -> dict[str, VoiceProvider]:
         StabilityAudioProvider(
             settings.stability_api_key,
             timeout=settings.voxbridge_request_timeout_seconds,
-            generation_timeout=settings.voxbridge_music_request_timeout_seconds,
+            music_timeout=settings.voxbridge_music_request_timeout_seconds,
+            sound_effect_timeout=settings.voxbridge_sound_effect_request_timeout_seconds,
         ),
         OpenAIVoiceProvider(
             settings.openai_api_key, timeout=settings.voxbridge_request_timeout_seconds

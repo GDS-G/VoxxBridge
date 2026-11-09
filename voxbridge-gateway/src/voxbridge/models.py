@@ -43,6 +43,8 @@ class MusicRequest:
     finetune_id: str | None = None
     respect_sections_durations: bool = True
     sign_with_c2pa: bool = False
+    steps: int | None = None
+    cfg_scale: float | None = None
 
 
 @dataclass(slots=True)
@@ -52,8 +54,10 @@ class SoundEffectRequest:
     loop: bool = False
     prompt_influence: float | None = None
     seed: int | None = None
-    model: str = "eleven_text_to_sound_v2"
+    model: str = "eleven_text_to_sound_v3"
     output_format: str = "mp3"
+    steps: int | None = None
+    cfg_scale: float | None = None
 
 
 @dataclass(slots=True)

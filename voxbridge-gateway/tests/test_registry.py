@@ -23,10 +23,10 @@ EXPECTED_PROVIDERS = {
         "music_formats": ["mp3"],
         "music_duration_range_ms": [3_000, 600_000],
         "music_plans": True,
-        "sound_effect_model": "eleven_text_to_sound_v2",
+        "sound_effect_model": "eleven_text_to_sound_v3",
         "sound_effect_default_duration_seconds": None,
         "sound_effect_default_prompt_influence": 0.3,
-        "sound_effect_models": ["eleven_text_to_sound_v2"],
+        "sound_effect_models": ["eleven_text_to_sound_v3", "eleven_text_to_sound_v2"],
         "sound_effect_formats": ["mp3"],
         "sound_effect_duration_range_seconds": [0.5, 30.0],
         "max_sound_effect_prompt_chars": 450,
@@ -104,8 +104,8 @@ EXPECTED_PROVIDERS = {
         "speed_range": None,
         "music_model": "lyria-002",
         "music_default_length_ms": None,
-        "music_models": ["lyria-002"],
-        "music_formats": ["wav"],
+        "music_models": ["lyria-002", "lyria-3-clip-preview", "lyria-3-pro-preview"],
+        "music_formats": ["wav", "mp3"],
         "music_duration_range_ms": None,
         "music_plans": False,
     },
@@ -118,18 +118,18 @@ EXPECTED_PROVIDERS = {
         "model": False,
         "speed": False,
         "speed_range": None,
-        "music_model": "stable-audio-2.5",
+        "music_model": "stable-audio-3",
         "music_default_length_ms": 30_000,
-        "music_models": ["stable-audio-2.5"],
+        "music_models": ["stable-audio-3", "stable-audio-2.5"],
         "music_formats": ["mp3", "wav"],
-        "music_duration_range_ms": [1_000, 190_000],
+        "music_duration_range_ms": [1_000, 380_000],
         "music_plans": False,
-        "sound_effect_model": "stable-audio-2.5",
+        "sound_effect_model": "stable-audio-3",
         "sound_effect_default_duration_seconds": 5.0,
         "sound_effect_default_prompt_influence": None,
-        "sound_effect_models": ["stable-audio-2.5"],
+        "sound_effect_models": ["stable-audio-3", "stable-audio-2.5"],
         "sound_effect_formats": ["mp3", "wav"],
-        "sound_effect_duration_range_seconds": [1.0, 190.0],
+        "sound_effect_duration_range_seconds": [1.0, 380.0],
         "max_sound_effect_prompt_chars": 10_000,
         "sound_effect_loop": False,
         "sound_effect_prompt_influence": False,
@@ -156,6 +156,9 @@ def test_all_initial_providers_registered():
             assert provider.max_response_bytes > settings.voxbridge_max_audio_bytes
         else:
             assert provider.max_response_bytes == settings.voxbridge_max_audio_bytes
+    stability = REGISTRY["stability"]
+    assert stability.music_timeout == settings.voxbridge_music_request_timeout_seconds
+    assert stability.sound_effect_timeout == settings.voxbridge_sound_effect_request_timeout_seconds
 
 
 def test_provider_capabilities_and_limits_are_truthful():
