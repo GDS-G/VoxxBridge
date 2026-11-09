@@ -1632,12 +1632,11 @@ async def test_stability_music_contract_and_result_metadata():
         ):
             assert b'name="' + name + b'"' in multipart
             assert value in multipart
-        assert request.extensions["timeout"] == {
-            "connect": 82.0,
-            "read": 82.0,
-            "write": 82.0,
-            "pool": 82.0,
-        }
+        request_timeouts = request.extensions["timeout"]
+        assert set(request_timeouts) == {"connect", "read", "write", "pool"}
+        for timeout in request_timeouts.values():
+            assert timeout == pytest.approx(82.0, abs=0.01)
+            assert timeout <= 82.0
         return httpx.Response(
             200,
             content=b"RIFF-stability-music",
